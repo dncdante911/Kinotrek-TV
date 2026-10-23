@@ -1,0 +1,5 @@
+<!-- Plain HTTP is required: the bundled TorrServer listens on http://127.0.0.1 and a home
+     TorrServer or IPTV playlist on the LAN usually has no certificate. Trackers use HTTPS. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

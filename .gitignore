@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+.android-home/
+.idea/
+**/build/
+local.properties
+release/*.jks
+release/signing.properties
+*.apk
+*.aab
+*.dm
+*.jks
+*.keystore
+screenshots/
+app/release/

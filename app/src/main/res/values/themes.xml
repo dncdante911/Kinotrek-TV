@@ -1,0 +1,9 @@
+<resources>
+    <color name="window_background">#FF0A0E16</color>
+    <style name="Theme.TrackerTV" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:colorAccent">#FF5EE0D2</item>
+        <item name="android:navigationBarColor">@color/window_background</item>
+        <item name="android:statusBarColor">@color/window_background</item>
+    </style>
+</resources>
