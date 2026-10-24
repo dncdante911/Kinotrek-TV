@@ -1,2 +1,2 @@
-# TorrServer: JNI entry points are called by name from native code.
--keep class xyz.secozzi.torrserver.** { *; }
+# TorrServer engine: JNI looks its native methods up by class and method name.
+-keep class org.trackertv.player.torrent.TorrServerEngine { *; }

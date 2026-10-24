@@ -16,8 +16,8 @@ android {
         applicationId = "org.trackertv.player"
         minSdk = 28
         targetSdk = 36
-        versionCode = 12
-        versionName = "1.4.0"
+        versionCode = 13
+        versionName = "1.5.0"
     }
 
     signingConfigs {
@@ -44,6 +44,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     testOptions { unitTests { isIncludeAndroidResources = true } }
+    // libtorrserver.so is ~25 MB per ABI: compressed, the APK (and every self-update) is far smaller,
+    // and the TV extracts only its own ABI on install.
+    packaging { jniLibs { useLegacyPackaging = true } }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -62,7 +65,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     //noinspection Aligned16KB
-    implementation("io.github.secozzi:torrserver:0.1.1")
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-exoplayer-hls:$media3")
     implementation("androidx.media3:media3-exoplayer-dash:$media3")

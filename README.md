@@ -2,7 +2,7 @@
 
 Android TV плеер для Android 9–16 (API 28–36): поиск фильмов и сериалов на торрент-трекерах и просмотр сразу, без скачивания. Торрент-движок TorrServer встроен в APK.
 
-Версия 1.4.0 · AGP 9.2.1 · Gradle 9.8.2 · Kotlin 2.4.21 · Compose for TV (tv-material 1.1.0, BOM 2026.09.00) · Media3 1.11.1 · compileSdk 37 / targetSdk 36.
+Версия 1.5.0 · TorrServer MatriX.147.1 · AGP 9.2.1 · Gradle 9.8.2 · Kotlin 2.4.21 · Compose for TV (tv-material 1.1.0, BOM 2026.09.00) · Media3 1.11.1 · compileSdk 37 / targetSdk 36.
 
 ## Возможности
 
@@ -37,7 +37,7 @@ org.trackertv.player
 ├── PlayerActivity        — Media3-плеер (управление: player/PlayerControls, PlayerMenu)
 ├── data/                 — LibraryRepository (library.json, AtomicFile, миграция со старых версий), AppSettings, ReleaseInfo, Updater, Support
 ├── net/                  — Http (отменяемые запросы), SourceSearchClient (с кэшем постеров), ReleaseDetails (разбор описания раздачи), TorrServerClient
-├── torrent/              — LocalTorrentService (встроенный движок), TorrentEngine (выбор сервера)
+├── torrent/              — LocalTorrentService (встроенный движок), TorrServerEngine (JNI), TorrentEngine (выбор сервера)
 ├── player/               — PlaybackRequest
 ├── device/               — DeviceCaps
 ├── web/                  — RutrackerActivity (WebView для входа)
@@ -64,8 +64,18 @@ org.trackertv.player
 2. Соберите и подпишите release тем же ключом, что и прошлые версии (иначе Android откажет в установке).
 3. На GitHub создайте Release с тегом, равным `versionName` (например `1.1.0` или `v1.1.0`), и приложите **один** APK. Текст релиза показывается в окне обновления.
 
+## Торрент-движок
+
+`app/src/main/jniLibs/*/libtorrserver.so` — [TorrServer](https://github.com/YouROK/TorrServer) MatriX.147.1 с JNI-мостом из `engine/jnibridge`, собранный под arm64-v8a, armeabi-v7a, x86_64 и x86 с выравниванием на 16 КБ. HTTP API слушает только 127.0.0.1. Веб-интерфейс и Swagger при сборке вырезаются (`engine/overlay`), Bonjour выключается. Пересборка или переход на новую версию:
+
+```sh
+ANDROID_NDK_HOME=/path/to/android-ndk-r28c ./engine/build.sh MatriX.147.1
+```
+
+Нужны Go (версию из go.mod TorrServer он скачает сам) и NDK r28+.
+
 ## Ограничения
 
-Нативная библиотека TorrServer (`io.github.secozzi:torrserver:0.1.1`, движок MatriX.141) выровнена на 4 КБ, поэтому работа на устройствах со страницей памяти 16 КБ не подтверждена. Поддержка HDR, Dolby Vision, кодеков и звука зависит от приставки, экрана и HDMI-цепочки. Диагностика показывает заявленные системой возможности. Счётчик сидов отражает последние данные сайта и не гарантирует скорость.
+Поддержка HDR, Dolby Vision, кодеков и звука зависит от приставки, экрана и HDMI-цепочки. Диагностика показывает заявленные системой возможности. Счётчик сидов отражает последние данные сайта и не гарантирует скорость.
 
 Используйте приложение с материалами, на просмотр которых у вас есть права.

@@ -102,6 +102,8 @@ internal class PlayerMenu(context: Context) : FrameLayout(context) {
             minimumHeight = dp(60)
             setPadding(dp(14), dp(10), dp(18), dp(10))
             isFocusable = true
+            // Our own focus look; the system one draws a grey square over it.
+            defaultFocusHighlightEnabled = false
             isClickable = true
             background = idle
             addView(ImageView(context).apply {

@@ -23,7 +23,6 @@ import kotlinx.coroutines.runBlocking
 import org.trackertv.player.MainActivity
 import org.trackertv.player.net.TorrServerClient
 import java.io.File
-import xyz.secozzi.torrserver.TorrServer
 import java.util.concurrent.Executors
 
 sealed interface EngineState {
@@ -38,9 +37,8 @@ sealed interface EngineState {
  * once nobody holds it for [IDLE_STOP_MS] the service stops itself and drops every torrent, so the
  * engine never keeps using the network in the background (notifications are almost invisible on TVs).
  *
- * The Go engine itself is started once per process and never stopped: its stopServer() closes the
- * torrent client and the settings DB but leaves the HTTP listener up, so the port keeps answering
- * /echo while every /torrents call fails with HTTP 500, and a new startServer() can't bind the port.
+ * The engine itself ([TorrServerEngine]) is started once per process and stays loaded: with no
+ * torrents it uses no traffic, and the next film opens without waiting for a restart.
  */
 class LocalTorrentService : Service() {
     private val worker = Executors.newSingleThreadExecutor()
@@ -69,8 +67,14 @@ class LocalTorrentService : Service() {
                 try {
                     // Leftovers of a process that was killed before it could drop its torrents.
                     cacheDir(this).deleteRecursively()
-                    val port = TorrServer.startServer(PORT, filesDir.absolutePath, "tracker", "")
-                    check(port > 0) { "TorrServer не запустился (код $port)" }
+                    // Settings of the old bundled engine (before 1.5.0) lived right in filesDir.
+                    File(filesDir, "config.db").delete()
+                    val dataDir = File(filesDir, "torrserver").absolutePath
+                    var error = ""
+                    // Another app may hold the default port; TorrentEngine uses it when it is a TorrServer.
+                    val port = PORTS.firstOrNull { port -> TorrServerEngine.start(port, dataDir).also { error = it }.isEmpty() }
+                    checkNotNull(port) { "TorrServer не запустился: $error" }
+                    Log.i(TAG, "TorrServer ${TorrServerEngine.version()} on port $port")
                     enginePort = port
                     mutableState.value = EngineState.Running(port)
                     if (canNotify()) getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification("Торрент-поток готов"))
@@ -127,7 +131,7 @@ class LocalTorrentService : Service() {
         private const val TAG = "LocalTorrentService"
         private const val CHANNEL = "tracker_torrent_playback"
         private const val NOTIFICATION_ID = 91
-        private const val PORT = "8090"
+        private val PORTS = 8090..8094
         private const val ACTION_STOP = "org.trackertv.player.STOP_TORRENT"
         private const val IDLE_STOP_MS = 5 * 60_000L
 

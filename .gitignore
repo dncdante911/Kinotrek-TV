@@ -13,3 +13,4 @@ release/signing.properties
 *.keystore
 screenshots/
 app/release/
+engine/.upstream/

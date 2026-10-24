@@ -116,6 +116,8 @@ internal class ControlButton(context: Context, icon: String, label: String, with
         orientation = HORIZONTAL
         gravity = Gravity.CENTER
         isFocusable = true
+        // Our own focus look; the system one draws a grey square over it.
+        defaultFocusHighlightEnabled = false
         isClickable = true
         contentDescription = label
         addView(ImageView(context).apply { setImageDrawable(iconDrawable) }, LayoutParams(dp(28), dp(28)))
@@ -165,6 +167,8 @@ internal class SeekBarView(context: Context) : View(context) {
     init {
         id = generateViewId()
         isFocusable = true
+        // Our own focus look; the system one draws a grey square over it.
+        defaultFocusHighlightEnabled = false
         isClickable = true
         minimumHeight = dp(32)
     }

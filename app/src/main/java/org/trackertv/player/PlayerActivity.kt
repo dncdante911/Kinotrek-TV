@@ -676,8 +676,8 @@ class PlayerActivity : ComponentActivity() {
                 if (video.width > 0) "${video.width}×${video.height}" else null,
                 codecLabel(video.sampleMimeType),
                 hdrLabel(video),
-                video.frameRate.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.3f к/с", it).replace(".000", "") },
-                video.bitrate.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.1f Мбит/с", it / 1_000_000f) },
+                video.frameRate.takeIf { it > 0 }?.let { String.format(RUSSIAN, "%.3f к/с", it).replace(",000", "") },
+                video.bitrate.takeIf { it > 0 }?.let { String.format(RUSSIAN, "%.1f Мбит/с", it / 1_000_000f) },
             )
             rows += PlayerMenu.Item("Видео", parts.joinToString(" · "))
         }
