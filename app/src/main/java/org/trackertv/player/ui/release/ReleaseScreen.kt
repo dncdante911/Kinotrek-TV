@@ -58,6 +58,8 @@ import org.trackertv.player.ui.components.RemoteImage
 import org.trackertv.player.ui.components.SeedsLabel
 import org.trackertv.player.ui.components.TvButton
 import org.trackertv.player.ui.components.remembered
+import org.trackertv.player.ui.decor.LocalOccasion
+import org.trackertv.player.ui.decor.cardDecor
 import org.trackertv.player.ui.search.SearchViewModel
 import org.trackertv.player.ui.theme.Icons
 import org.trackertv.player.ui.theme.Palette
@@ -111,7 +113,8 @@ fun ReleaseScreen(vm: AppViewModel, search: SearchViewModel, hit: Hit) {
         ) {
             item(key = "header") {
                 Row {
-                    Box(Modifier.width(210.dp).aspectRatio(2f / 3f).clip(CardShape).border(1.dp, Palette.surfaceHigher, CardShape)) {
+                    Box(Modifier.width(210.dp).aspectRatio(2f / 3f).clip(CardShape).border(1.dp, Palette.surfaceHigher, CardShape)
+                        .cardDecor(LocalOccasion.current, info.title)) {
                         PosterArt(info.title, info.title, Modifier.fillMaxSize(), letterSize = 120, imageUrl = poster, imageWidthPx = 420)
                     }
                     Spacer(Modifier.width(32.dp))

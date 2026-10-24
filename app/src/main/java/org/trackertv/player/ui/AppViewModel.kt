@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import org.trackertv.player.VoiceState
 import org.trackertv.player.app
 import org.trackertv.player.data.LibraryItem
+import org.trackertv.player.data.Occasion
 import org.trackertv.player.data.SourceKind
 import org.trackertv.player.data.Support
 import org.trackertv.player.data.UpdateState
@@ -96,6 +97,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var voice by mutableStateOf<VoiceState>(VoiceState.Off)
     val updater = app.updater
     private var remindedThisLaunch = false
+
+    /** Settings → "Посмотреть оформление": shows any decoration until the app restarts. */
+    var decorPreview by mutableStateOf<Occasion?>(null)
 
     /**
      * A thank-you note on the home screen after every ~10 hours of watching, at most once per app

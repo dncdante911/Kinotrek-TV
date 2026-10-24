@@ -37,6 +37,8 @@ import org.trackertv.player.ui.UiEvent
 import org.trackertv.player.ui.components.DialogSpec
 import org.trackertv.player.ui.components.FocusMemory
 import org.trackertv.player.ui.components.InitialFocus
+import org.trackertv.player.data.DecorMode
+import org.trackertv.player.data.Occasion
 import org.trackertv.player.data.Support
 import org.trackertv.player.data.UpdateState
 import org.trackertv.player.ui.components.ListRow
@@ -170,6 +172,22 @@ fun SettingsScreen(vm: AppViewModel) {
                 "Раз в 12 часов при открытии главного экрана. Устанавливается только после вашего подтверждения.",
                 toggle = settings.autoUpdate, modifier = Modifier.remembered(memory, "auto-update")) {
                 vm.settings.setAutoUpdate(!settings.autoUpdate)
+            }
+        }
+        item {
+            SettingRow(Icons.Star, "Сезонное оформление",
+                "Снег зимой, лепестки весной, светлячки летом, листья осенью и украшения к праздникам за неделю до и неделю после.",
+                value = settings.decor.label, modifier = Modifier.remembered(memory, "decor")) {
+                vm.settings.setDecor(DecorMode.entries[(settings.decor.ordinal + 1) % DecorMode.entries.size])
+            }
+        }
+        item {
+            val preview = vm.decorPreview
+            SettingRow(Icons.Tv, "Посмотреть оформление",
+                "Нажимайте, чтобы по очереди примерить все сезоны и праздники. После перезапуска всё вернётся по календарю.",
+                value = preview?.label ?: "По календарю", modifier = Modifier.remembered(memory, "decor-preview")) {
+                val all = Occasion.entries
+                vm.decorPreview = if (preview == null) all.first() else all.getOrNull(preview.ordinal + 1)
             }
         }
         if (Support.available) item {

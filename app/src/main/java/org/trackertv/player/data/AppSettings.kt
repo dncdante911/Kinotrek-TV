@@ -30,6 +30,7 @@ data class SettingsState(
     val watchedMinutes: Int = 0,
     /** Watched minutes when the support note was last shown; it returns every [Support.REMINDER_AFTER_MINUTES]. */
     val supportShownAtMinutes: Int = 0,
+    val decor: DecorMode = DecorMode.AUTO,
 )
 
 /** User preferences; the "settings" file and its keys are shared with versions before 1.0. */
@@ -47,6 +48,7 @@ class AppSettings(context: Context) {
     fun setAutoUpdate(enabled: Boolean) = change { it.copy(autoUpdate = enabled) }
     fun setLastUpdateCheck(time: Long) = change { it.copy(lastUpdateCheck = time) }
     fun addWatchedMinute() = change { it.copy(watchedMinutes = it.watchedMinutes + 1) }
+    fun setDecor(mode: DecorMode) = change { it.copy(decor = mode) }
     fun markSupportReminderShown() = change { it.copy(supportShownAtMinutes = it.watchedMinutes) }
 
     fun remember(query: String) {
@@ -75,6 +77,7 @@ class AppSettings(context: Context) {
             lastUpdateCheck = prefs.getLong("last_update_check", 0),
             watchedMinutes = prefs.getInt("watched_minutes", 0),
             supportShownAtMinutes = prefs.getInt("support_shown_at", 0),
+            decor = DecorMode.entries.firstOrNull { it.name == prefs.getString("decor", null) } ?: DecorMode.AUTO,
         )
     }
 
@@ -88,6 +91,7 @@ class AppSettings(context: Context) {
         putLong("last_update_check", state.lastUpdateCheck)
         putInt("watched_minutes", state.watchedMinutes)
         putInt("support_shown_at", state.supportShownAtMinutes)
+        putString("decor", state.decor.name)
     }
 
     private companion object {

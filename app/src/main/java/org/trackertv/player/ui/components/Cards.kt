@@ -48,6 +48,8 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import org.trackertv.player.ui.decor.LocalOccasion
+import org.trackertv.player.ui.decor.cardDecor
 import org.trackertv.player.ui.theme.Icons
 import org.trackertv.player.ui.theme.Palette
 
@@ -124,7 +126,8 @@ fun MediaCard(
         Column {
             PosterArt(
                 seed, title,
-                Modifier.fillMaxWidth().aspectRatio(if (portrait) 2f / 3f else 16f / 9f).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
+                Modifier.fillMaxWidth().aspectRatio(if (portrait) 2f / 3f else 16f / 9f).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .cardDecor(LocalOccasion.current, title),
                 imageUrl = imageUrl,
                 imageWidthPx = if (portrait) 320 else 480,
             ) {
