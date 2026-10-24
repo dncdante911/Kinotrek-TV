@@ -24,8 +24,8 @@ data class VideoFile(val id: Int, val path: String, val length: Long) {
 
 data class TorrentInfo(val hash: String, val title: String, val files: List<VideoFile>)
 
-/** Status line shown while TorrServer looks for peers and metadata. */
-data class TorrentStatus(val peers: Int, val seeders: Int, val speedBytes: Long)
+/** Status line shown while TorrServer looks for peers and metadata, and in the player. */
+data class TorrentStatus(val peers: Int, val seeders: Int, val speedBytes: Long, val uploadBytes: Long = 0)
 
 /** HTTP API of TorrServer MatriX (https://github.com/YouROK/TorrServer). */
 class TorrServerClient(address: String) {
@@ -62,6 +62,13 @@ class TorrServerClient(address: String) {
         return TorrentInfo(hash, json.optString("title", title), videoFiles(json.getJSONArray("file_stats")))
     }
 
+    /** Live speed and peers of an open torrent, or null when TorrServer no longer has it. */
+    suspend fun status(hash: String): TorrentStatus? {
+        val json = call(JSONObject().put("action", "get").put("hash", hash))
+        if (json.optString("hash").isEmpty()) return null
+        return TorrentStatus(json.optInt("active_peers"), json.optInt("connected_seeders"), json.optLong("download_speed"), json.optLong("upload_speed"))
+    }
+
     fun streamUrl(hash: String, file: VideoFile): String =
         "$base/stream/${Uri.encode(file.fileName)}?link=${Uri.encode(hash)}&index=${file.id}&play"
 
@@ -76,19 +83,15 @@ class TorrServerClient(address: String) {
     }
 
     /**
-     * Sets how far TorrServer reads ahead and whether it caches on disk ([diskPath]) or in memory.
-     * Saving settings restarts its torrent client and drops active torrents, so nothing is sent
-     * when the values already match.
+     * Changes TorrServer settings (names as in its BTSets, e.g. "CacheSize"), keeping the rest.
+     * Saving restarts its torrent client and drops active torrents, so nothing is sent when the
+     * values already match.
      */
-    suspend fun configureCache(bytes: Long, diskPath: String?) {
+    suspend fun configure(values: Map<String, Any>) {
         val current = JSONObject(post(JSONObject().put("action", "get"), "settings"))
+        if (values.all { (key, value) -> current.opt(key)?.toString() == value.toString() }) return
         val wanted = JSONObject(current.toString())
-            .put("CacheSize", if (diskPath != null) bytes else MEMORY_CACHE_BYTES)
-            .put("UseDisk", diskPath != null)
-            .put("RemoveCacheOnDrop", true)
-            .put("ReaderReadAHead", 95)
-        if (diskPath != null) wanted.put("TorrentsSavePath", diskPath)
-        if (CACHE_KEYS.all { current.opt(it)?.toString() == wanted.opt(it)?.toString() }) return
+        values.forEach { (key, value) -> wanted.put(key, value) }
         post(JSONObject().put("action", "set").put("sets", wanted), "settings")
     }
 
@@ -115,9 +118,6 @@ class TorrServerClient(address: String) {
 
     private companion object {
         const val METADATA_TIMEOUT_MS = 90_000L
-        /** TorrServer's own default: about a minute of 1080p, held in memory. */
-        const val MEMORY_CACHE_BYTES = 64L shl 20
-        val CACHE_KEYS = listOf("CacheSize", "UseDisk", "RemoveCacheOnDrop", "ReaderReadAHead", "TorrentsSavePath")
         val VIDEO = Regex(".*\\.(mkv|mp4|m4v|webm|mov|avi|ts|m2ts|mts|mpeg|mpg|vob|flv|3gp)$")
         val SAMPLE = Regex("\\bsample\\b|\\btrailer\\b")
         val CHUNK = Regex("\\d+|\\D+")

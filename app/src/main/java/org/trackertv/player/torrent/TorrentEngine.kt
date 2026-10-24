@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import org.trackertv.player.app
+import org.trackertv.player.data.UploadLimit
 import org.trackertv.player.net.TorrServerClient
 import java.io.IOException
 
@@ -17,6 +18,10 @@ object TorrentEngine {
     /** Disk left free for the system when the read-ahead cache is sized. */
     private const val DISK_RESERVE_BYTES = 1L shl 30
     private const val MIN_DISK_CACHE_BYTES = 256L shl 20
+    /** TorrServer's own default: about a minute of 1080p, held in memory. */
+    private const val MEMORY_CACHE_BYTES = 64L shl 20
+    /** TorrServer allows 25 peer connections by default; more peers fill slow releases faster. */
+    private const val CONNECTIONS = 50
 
     suspend fun connect(context: Context, externalServer: String, onStep: (String) -> Unit): TorrServerClient {
         if (externalServer.isNotBlank()) {
@@ -56,11 +61,24 @@ object TorrentEngine {
 
     /** Only our own engine is tuned; an external server or another app keeps its owner's settings. */
     private suspend fun configure(context: Context, client: TorrServerClient) {
-        val buffer = context.app.settings.current.pauseBuffer
+        val settings = context.app.settings.current
         val dir = LocalTorrentService.cacheDir(context)
+        val buffer = settings.pauseBuffer
         val bytes = if (buffer.enabled && (dir.isDirectory || dir.mkdirs())) minOf(buffer.bytes, dir.usableSpace - DISK_RESERVE_BYTES) else 0
+        val onDisk = bytes >= MIN_DISK_CACHE_BYTES
+        val values = mutableMapOf<String, Any>(
+            "CacheSize" to if (onDisk) bytes else MEMORY_CACHE_BYTES,
+            "UseDisk" to onDisk,
+            "RemoveCacheOnDrop" to true,
+            "ReaderReadAHead" to 95,
+            "ConnectionsLimit" to CONNECTIONS,
+            // In KB/s, 0 means no limit.
+            "UploadRateLimit" to settings.upload.kbps,
+            "DisableUpload" to (settings.upload == UploadLimit.OFF),
+        )
+        if (onDisk) values["TorrentsSavePath"] = dir.absolutePath
         try {
-            if (bytes >= MIN_DISK_CACHE_BYTES) client.configureCache(bytes, dir.absolutePath) else client.configureCache(0, null)
+            client.configure(values)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

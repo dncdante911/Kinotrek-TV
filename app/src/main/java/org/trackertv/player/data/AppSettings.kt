@@ -28,6 +28,23 @@ enum class PauseBuffer(val bytes: Long, val label: String) {
     val enabled: Boolean get() = this != OFF
 }
 
+/** Upload to other peers. Without it some releases fill slower, since peers prefer those who share back. */
+enum class UploadLimit(val kbps: Int, val label: String) {
+    UNLIMITED(0, "Без ограничений"),
+    MB2(2048, "2 МБ/с"),
+    MB1(1024, "1 МБ/с"),
+    KB300(300, "300 КБ/с"),
+    OFF(0, "Выключена"),
+}
+
+/** Subtitle size as a multiple of Media3's default. */
+enum class SubtitleSize(val scale: Float, val label: String) {
+    SMALL(0.8f, "Мелкие"),
+    NORMAL(1f, "Обычные"),
+    LARGE(1.25f, "Крупные"),
+    HUGE(1.5f, "Очень крупные"),
+}
+
 data class SettingsState(
     /** Empty means the TorrServer bundled with the app. */
     val server: String = "",
@@ -35,6 +52,8 @@ data class SettingsState(
     val audioLanguage: AudioLanguage = AudioLanguage.RUSSIAN,
     val autoplayNext: Boolean = true,
     val pauseBuffer: PauseBuffer = PauseBuffer.MEDIUM,
+    val upload: UploadLimit = UploadLimit.UNLIMITED,
+    val subtitleSize: SubtitleSize = SubtitleSize.NORMAL,
     val history: List<String> = emptyList(),
     val autoUpdate: Boolean = true,
     val lastUpdateCheck: Long = 0,
@@ -56,6 +75,8 @@ class AppSettings(context: Context) {
     fun setAudioLanguage(language: AudioLanguage) = change { it.copy(audioLanguage = language) }
     fun setAutoplayNext(enabled: Boolean) = change { it.copy(autoplayNext = enabled) }
     fun setPauseBuffer(buffer: PauseBuffer) = change { it.copy(pauseBuffer = buffer) }
+    fun setUpload(limit: UploadLimit) = change { it.copy(upload = limit) }
+    fun setSubtitleSize(size: SubtitleSize) = change { it.copy(subtitleSize = size) }
     fun clearHistory() = change { it.copy(history = emptyList()) }
     fun setAutoUpdate(enabled: Boolean) = change { it.copy(autoUpdate = enabled) }
     fun setLastUpdateCheck(time: Long) = change { it.copy(lastUpdateCheck = time) }
@@ -85,6 +106,8 @@ class AppSettings(context: Context) {
             audioLanguage = AudioLanguage.of(prefs.getString(KEY_AUDIO, AudioLanguage.RUSSIAN.code)),
             autoplayNext = prefs.getBoolean(KEY_AUTOPLAY, true),
             pauseBuffer = PauseBuffer.entries.firstOrNull { it.name == prefs.getString("pause_buffer", null) } ?: PauseBuffer.MEDIUM,
+            upload = UploadLimit.entries.firstOrNull { it.name == prefs.getString("upload", null) } ?: UploadLimit.UNLIMITED,
+            subtitleSize = SubtitleSize.entries.firstOrNull { it.name == prefs.getString("subtitle_size", null) } ?: SubtitleSize.NORMAL,
             history = history,
             autoUpdate = prefs.getBoolean("auto_update", true),
             lastUpdateCheck = prefs.getLong("last_update_check", 0),
@@ -100,6 +123,8 @@ class AppSettings(context: Context) {
         putString(KEY_AUDIO, state.audioLanguage.code)
         putBoolean(KEY_AUTOPLAY, state.autoplayNext)
         putString("pause_buffer", state.pauseBuffer.name)
+        putString("upload", state.upload.name)
+        putString("subtitle_size", state.subtitleSize.name)
         putString(KEY_HISTORY, JSONArray(state.history).toString())
         putBoolean("auto_update", state.autoUpdate)
         putLong("last_update_check", state.lastUpdateCheck)

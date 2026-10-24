@@ -40,6 +40,7 @@ import org.trackertv.player.ui.components.InitialFocus
 import org.trackertv.player.data.DecorMode
 import org.trackertv.player.data.Occasion
 import org.trackertv.player.data.PauseBuffer
+import org.trackertv.player.data.UploadLimit
 import org.trackertv.player.data.Support
 import org.trackertv.player.data.UpdateState
 import org.trackertv.player.ui.components.ListRow
@@ -93,6 +94,17 @@ fun SettingsScreen(vm: AppViewModel) {
                 } else "Движок держит в памяти около минуты видео вперёд.",
                 value = settings.pauseBuffer.label, modifier = Modifier.remembered(memory, "pause-buffer")) {
                 vm.settings.setPauseBuffer(PauseBuffer.entries[(settings.pauseBuffer.ordinal + 1) % PauseBuffer.entries.size])
+            }
+        }
+        item {
+            SettingRow(Icons.Upload, "Отдача другим",
+                when (settings.upload) {
+                    UploadLimit.UNLIMITED -> "Встроенный движок раздаёт скачанное другим, как обычный торрент-клиент. Так раздачи качаются быстрее."
+                    UploadLimit.OFF -> "Исходящий трафик не тратится. Некоторые раздачи могут качаться медленнее."
+                    else -> "Отдача не быстрее ${settings.upload.label}: меньше исходящего трафика, скорость загрузки почти не страдает."
+                },
+                value = settings.upload.label, modifier = Modifier.remembered(memory, "upload")) {
+                vm.settings.setUpload(UploadLimit.entries[(settings.upload.ordinal + 1) % UploadLimit.entries.size])
             }
         }
 
