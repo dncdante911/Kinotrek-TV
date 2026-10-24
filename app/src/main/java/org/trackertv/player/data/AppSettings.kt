@@ -18,12 +18,23 @@ enum class AudioLanguage(val code: String, val label: String) {
     }
 }
 
+/** How far the built-in engine downloads ahead, kept on disk, so a pause on slow internet fills up the buffer. */
+enum class PauseBuffer(val bytes: Long, val label: String) {
+    OFF(0, "Выключено"),
+    SMALL(1L shl 30, "1 ГБ"),
+    MEDIUM(2L shl 30, "2 ГБ"),
+    LARGE(4L shl 30, "4 ГБ");
+
+    val enabled: Boolean get() = this != OFF
+}
+
 data class SettingsState(
     /** Empty means the TorrServer bundled with the app. */
     val server: String = "",
     val autoFrameRate: Boolean = true,
     val audioLanguage: AudioLanguage = AudioLanguage.RUSSIAN,
     val autoplayNext: Boolean = true,
+    val pauseBuffer: PauseBuffer = PauseBuffer.MEDIUM,
     val history: List<String> = emptyList(),
     val autoUpdate: Boolean = true,
     val lastUpdateCheck: Long = 0,
@@ -44,6 +55,7 @@ class AppSettings(context: Context) {
     fun setAutoFrameRate(enabled: Boolean) = change { it.copy(autoFrameRate = enabled) }
     fun setAudioLanguage(language: AudioLanguage) = change { it.copy(audioLanguage = language) }
     fun setAutoplayNext(enabled: Boolean) = change { it.copy(autoplayNext = enabled) }
+    fun setPauseBuffer(buffer: PauseBuffer) = change { it.copy(pauseBuffer = buffer) }
     fun clearHistory() = change { it.copy(history = emptyList()) }
     fun setAutoUpdate(enabled: Boolean) = change { it.copy(autoUpdate = enabled) }
     fun setLastUpdateCheck(time: Long) = change { it.copy(lastUpdateCheck = time) }
@@ -72,6 +84,7 @@ class AppSettings(context: Context) {
             autoFrameRate = prefs.getBoolean(KEY_AUTO_FPS, true),
             audioLanguage = AudioLanguage.of(prefs.getString(KEY_AUDIO, AudioLanguage.RUSSIAN.code)),
             autoplayNext = prefs.getBoolean(KEY_AUTOPLAY, true),
+            pauseBuffer = PauseBuffer.entries.firstOrNull { it.name == prefs.getString("pause_buffer", null) } ?: PauseBuffer.MEDIUM,
             history = history,
             autoUpdate = prefs.getBoolean("auto_update", true),
             lastUpdateCheck = prefs.getLong("last_update_check", 0),
@@ -86,6 +99,7 @@ class AppSettings(context: Context) {
         putBoolean(KEY_AUTO_FPS, state.autoFrameRate)
         putString(KEY_AUDIO, state.audioLanguage.code)
         putBoolean(KEY_AUTOPLAY, state.autoplayNext)
+        putString("pause_buffer", state.pauseBuffer.name)
         putString(KEY_HISTORY, JSONArray(state.history).toString())
         putBoolean("auto_update", state.autoUpdate)
         putLong("last_update_check", state.lastUpdateCheck)

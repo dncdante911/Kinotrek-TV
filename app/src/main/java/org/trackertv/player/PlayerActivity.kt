@@ -80,6 +80,11 @@ class PlayerActivity : ComponentActivity() {
     private var resumeIndex = 0
     private var resumePositionMs = 0L
     private var hideHint: Runnable? = null
+    private var holdsEngine = false
+    private val releaseHeld = Runnable {
+        releasePlayer()
+        releaseEngine()
+    }
 
     private val settings get() = app.settings.current
 
@@ -97,15 +102,40 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (request.torrent) LocalTorrentService.acquire()
+        playerView.removeCallbacks(releaseHeld)
+        if (request.torrent && !holdsEngine) {
+            holdsEngine = true
+            LocalTorrentService.acquire()
+            LocalTorrentService.resume(this)
+        }
         initializePlayer()
     }
 
     override fun onStop() {
-        releasePlayer()
-        if (request.torrent) LocalTorrentService.release()
+        // A paused torrent keeps its stream open (e.g. under the TV screensaver), so TorrServer keeps downloading ahead.
+        val paused = player?.let { !it.playWhenReady && (it.playbackState == Player.STATE_READY || it.playbackState == Player.STATE_BUFFERING) } == true
+        if (request.torrent && settings.pauseBuffer.enabled && paused && !isFinishing) {
+            saveProgress()
+            playerView.postDelayed(releaseHeld, PAUSE_HOLD_MS)
+        } else {
+            releasePlayer()
+            releaseEngine()
+        }
         app.library.flush()
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        if (::playerView.isInitialized) playerView.removeCallbacks(releaseHeld)
+        releasePlayer()
+        releaseEngine()
+        super.onDestroy()
+    }
+
+    private fun releaseEngine() {
+        if (!holdsEngine) return
+        holdsEngine = false
+        LocalTorrentService.release()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -443,6 +473,8 @@ class PlayerActivity : ComponentActivity() {
         private const val STATE_INDEX = "index"
         private const val STATE_POSITION = "position"
         private const val SEEK_STEP_MS = 10_000L
+        /** A paused torrent left in the background stops downloading after this long. */
+        private const val PAUSE_HOLD_MS = 2 * 60 * 60_000L
         private const val UP_NEXT_MS = 20_000L
         private const val MUTED = 0xFFB8C2D3.toInt()
 

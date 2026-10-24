@@ -39,6 +39,7 @@ import org.trackertv.player.ui.components.FocusMemory
 import org.trackertv.player.ui.components.InitialFocus
 import org.trackertv.player.data.DecorMode
 import org.trackertv.player.data.Occasion
+import org.trackertv.player.data.PauseBuffer
 import org.trackertv.player.data.Support
 import org.trackertv.player.data.UpdateState
 import org.trackertv.player.ui.components.ListRow
@@ -83,6 +84,15 @@ fun SettingsScreen(vm: AppViewModel) {
             SettingRow(Icons.Play, "Следующая серия автоматически", "После окончания файла сразу запускается следующий из раздачи.",
                 toggle = settings.autoplayNext, modifier = Modifier.remembered(memory, "autoplay")) {
                 vm.settings.setAutoplayNext(!settings.autoplayNext)
+            }
+        }
+        item {
+            SettingRow(Icons.Pause, "Подгрузка на паузе",
+                if (settings.pauseBuffer.enabled) {
+                    "На паузе встроенный движок качает фильм вперёд, до ${settings.pauseBuffer.label} на диске. Помогает при медленном интернете."
+                } else "Движок держит в памяти около минуты видео вперёд.",
+                value = settings.pauseBuffer.label, modifier = Modifier.remembered(memory, "pause-buffer")) {
+                vm.settings.setPauseBuffer(PauseBuffer.entries[(settings.pauseBuffer.ordinal + 1) % PauseBuffer.entries.size])
             }
         }
 

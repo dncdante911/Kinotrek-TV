@@ -65,11 +65,42 @@ class TorrServerClient(address: String) {
     fun streamUrl(hash: String, file: VideoFile): String =
         "$base/stream/${Uri.encode(file.fileName)}?link=${Uri.encode(hash)}&index=${file.id}&play"
 
+    /** Closes every active torrent so an idle engine stops using the network. */
+    suspend fun dropAll() {
+        val list = post(JSONObject().put("action", "list")).ifEmpty { "[]" }
+        val torrents = if (list.startsWith("[")) JSONArray(list) else JSONArray()
+        for (i in 0 until torrents.length()) {
+            val hash = torrents.optJSONObject(i)?.optString("hash").orEmpty()
+            if (hash.isNotEmpty()) post(JSONObject().put("action", "drop").put("hash", hash))
+        }
+    }
+
+    /**
+     * Sets how far TorrServer reads ahead and whether it caches on disk ([diskPath]) or in memory.
+     * Saving settings restarts its torrent client and drops active torrents, so nothing is sent
+     * when the values already match.
+     */
+    suspend fun configureCache(bytes: Long, diskPath: String?) {
+        val current = JSONObject(post(JSONObject().put("action", "get"), "settings"))
+        val wanted = JSONObject(current.toString())
+            .put("CacheSize", if (diskPath != null) bytes else MEMORY_CACHE_BYTES)
+            .put("UseDisk", diskPath != null)
+            .put("RemoveCacheOnDrop", true)
+            .put("ReaderReadAHead", 95)
+        if (diskPath != null) wanted.put("TorrentsSavePath", diskPath)
+        if (CACHE_KEYS.all { current.opt(it)?.toString() == wanted.opt(it)?.toString() }) return
+        post(JSONObject().put("action", "set").put("sets", wanted), "settings")
+    }
+
     private suspend fun call(body: JSONObject): JSONObject {
-        val response = Http.request("$base/torrents", method = "POST", body = body.toString(), readTimeoutMs = 30_000)
-        if (!response.ok) throw IOException("TorrServer ответил HTTP ${response.code}")
-        val text = response.text().trim()
+        val text = post(body)
         return if (text.startsWith("[")) JSONArray(text).optJSONObject(0) ?: JSONObject() else JSONObject(text)
+    }
+
+    private suspend fun post(body: JSONObject, path: String = "torrents"): String {
+        val response = Http.request("$base/$path", method = "POST", body = body.toString(), readTimeoutMs = 30_000)
+        if (!response.ok) throw IOException("TorrServer ответил HTTP ${response.code}")
+        return response.text().trim()
     }
 
     private fun videoFiles(stats: JSONArray): List<VideoFile> {
@@ -84,6 +115,9 @@ class TorrServerClient(address: String) {
 
     private companion object {
         const val METADATA_TIMEOUT_MS = 90_000L
+        /** TorrServer's own default: about a minute of 1080p, held in memory. */
+        const val MEMORY_CACHE_BYTES = 64L shl 20
+        val CACHE_KEYS = listOf("CacheSize", "UseDisk", "RemoveCacheOnDrop", "ReaderReadAHead", "TorrentsSavePath")
         val VIDEO = Regex(".*\\.(mkv|mp4|m4v|webm|mov|avi|ts|m2ts|mts|mpeg|mpg|vob|flv|3gp)$")
         val SAMPLE = Regex("\\bsample\\b|\\btrailer\\b")
         val CHUNK = Regex("\\d+|\\D+")

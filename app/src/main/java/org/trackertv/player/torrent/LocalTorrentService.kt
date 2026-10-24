@@ -19,7 +19,10 @@ import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
 import org.trackertv.player.MainActivity
+import org.trackertv.player.net.TorrServerClient
+import java.io.File
 import xyz.secozzi.torrserver.TorrServer
 import java.util.concurrent.Executors
 
@@ -32,8 +35,12 @@ sealed interface EngineState {
 
 /**
  * Runs the bundled TorrServer while something needs it. Screens and the player [acquire] it;
- * once nobody holds it for [IDLE_STOP_MS] the service stops itself, so the engine never keeps
- * using the network in the background (notifications are almost invisible on TVs).
+ * once nobody holds it for [IDLE_STOP_MS] the service stops itself and drops every torrent, so the
+ * engine never keeps using the network in the background (notifications are almost invisible on TVs).
+ *
+ * The Go engine itself is started once per process and never stopped: its stopServer() closes the
+ * torrent client and the settings DB but leaves the HTTP listener up, so the port keeps answering
+ * /echo while every /torrents call fails with HTTP 500, and a new startServer() can't bind the port.
  */
 class LocalTorrentService : Service() {
     private val worker = Executors.newSingleThreadExecutor()
@@ -54,12 +61,17 @@ class LocalTorrentService : Service() {
         }
         // The typed overload exists from Android 10; on Android 9 the manifest type is enough.
         ServiceCompat.startForeground(this, NOTIFICATION_ID, notification("Запуск торрент-движка…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-        if (mutableState.value !is EngineState.Running && mutableState.value != EngineState.Starting) {
+        if (enginePort > 0) {
+            mutableState.value = EngineState.Running(enginePort)
+        } else if (mutableState.value !is EngineState.Running && mutableState.value != EngineState.Starting) {
             mutableState.value = EngineState.Starting
             worker.execute {
                 try {
+                    // Leftovers of a process that was killed before it could drop its torrents.
+                    cacheDir(this).deleteRecursively()
                     val port = TorrServer.startServer(PORT, filesDir.absolutePath, "tracker", "")
                     check(port > 0) { "TorrServer не запустился (код $port)" }
+                    enginePort = port
                     mutableState.value = EngineState.Running(port)
                     if (canNotify()) getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification("Торрент-поток готов"))
                 } catch (e: Throwable) {
@@ -100,9 +112,11 @@ class LocalTorrentService : Service() {
     override fun onDestroy() {
         handler.removeCallbacks(idleStop)
         instance = null
-        // stopServer() may block on network teardown; never do it on the main thread.
+        // Network calls never run on the main thread. The engine stays loaded, see the class comment.
+        val port = enginePort
         worker.execute {
-            runCatching { TorrServer.stopServer() }
+            if (port > 0) runCatching { runBlocking { TorrServerClient("http://127.0.0.1:$port").dropAll() } }
+                .onFailure { Log.w(TAG, "Could not drop torrents", it) }
             if (mutableState.value is EngineState.Running || mutableState.value == EngineState.Starting) mutableState.value = EngineState.Stopped
         }
         worker.shutdown()
@@ -123,9 +137,23 @@ class LocalTorrentService : Service() {
         private var instance: LocalTorrentService? = null
         private var users = 0
 
+        /** Port of the engine loaded into this process, 0 until the first successful start. */
+        @Volatile private var enginePort = 0
+
+        /** Our engine already holds a port here, so whatever answers on it is ours, not another app. */
+        val engineLoaded: Boolean get() = enginePort > 0
+
+        /** Where the read-ahead cache lives when it is kept on disk. */
+        fun cacheDir(context: Context) = File(context.cacheDir, "torrents")
+
         fun start(context: Context) {
             if (mutableState.value is EngineState.Failed) mutableState.value = EngineState.Stopped
             context.startForegroundService(Intent(context, LocalTorrentService::class.java))
+        }
+
+        /** Brings the service back after an idle stop if our engine is the one serving the stream. */
+        fun resume(context: Context) {
+            if (engineLoaded && instance == null) start(context)
         }
 
         fun stop(context: Context) {
