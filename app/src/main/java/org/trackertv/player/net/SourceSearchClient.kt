@@ -17,7 +17,10 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import org.trackertv.player.data.Misfit
 import org.trackertv.player.data.ReleaseInfo
+import org.trackertv.player.data.StreamFit
+import org.trackertv.player.data.StreamProfile
 import java.io.IOException
 import java.net.URL
 import java.nio.charset.Charset
@@ -57,6 +60,11 @@ data class Hit(
     val sites: Int = 1,
 ) {
     val info: ReleaseInfo = ReleaseInfo.parse(title)
+    val bytes: Long? = StreamFit.sizeBytes(size)
+    /** Rough bitrate from size; null when it cannot be told (a series without an episode count). */
+    val mbps: Double? get() = StreamFit.mbps(info, bytes)
+
+    fun misfit(profile: StreamProfile, lineMbps: Double?): Misfit? = StreamFit.check(info, bytes, seeds, profile, lineMbps)
 }
 
 data class SourceError(val source: Source, val message: String, val needsLogin: Boolean = false)

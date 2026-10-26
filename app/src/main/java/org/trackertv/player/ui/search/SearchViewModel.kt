@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.trackertv.player.app
+import org.trackertv.player.data.Misfit
 import org.trackertv.player.data.Quality
 import org.trackertv.player.data.ReleaseInfo
 import org.trackertv.player.net.Category
@@ -31,6 +32,7 @@ enum class QualityFilter(val label: String, val matches: (ReleaseInfo) -> Boolea
 class SearchViewModel(application: Application) : AndroidViewModel(application) {
     private val sources = application.app.sources
     private val settings = application.app.settings
+    private val monitor = application.app.network
 
     var mode by mutableStateOf(SearchMode.SEARCH)
         private set
@@ -49,9 +51,26 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     var shownQuery by mutableStateOf<String?>(null)
         private set
 
-    val visible: List<Hit> by derivedStateOf { hits.filter { quality.matches(it.info) } }
+    var network by mutableStateOf(monitor.state.value)
+        private set
+    /** "Показать все": releases that do not suit the internet are shown too, until the next search. */
+    var showAll by mutableStateOf(false)
+        private set
+
+    private val wanted: List<Hit> by derivedStateOf { hits.filter { quality.matches(it.info) } }
+    val visible: List<Hit> by derivedStateOf { if (showAll) wanted else wanted.filter { misfit(it) == null } }
+    /** Releases hidden only because they do not suit the internet. */
+    val hidden: Int by derivedStateOf { if (showAll) 0 else wanted.size - visible.size }
     val focus = FocusMemory()
     private var job: Job? = null
+
+    init {
+        viewModelScope.launch { monitor.state.collect { network = it } }
+    }
+
+    fun misfit(hit: Hit): Misfit? = network.profile?.let { hit.misfit(it, network.speedMbps) }
+
+    fun toggleShowAll() { showAll = !showAll }
 
     fun submit(text: String = query) {
         val value = text.trim()
@@ -93,6 +112,7 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
         job?.cancel()
         focus.forget()
         loading = true
+        showAll = false
         hits = emptyList()
         errors = emptyList()
         if (searchQuery != null) shownQuery = searchQuery

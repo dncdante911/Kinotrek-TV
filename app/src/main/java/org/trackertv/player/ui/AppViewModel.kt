@@ -13,6 +13,9 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import org.trackertv.player.VoiceState
@@ -77,6 +80,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application.app
     val library = app.library
     val settings = app.settings
+    val network = app.network
 
     val stack = mutableStateListOf<Screen>(Screen.Home)
     val current: Screen get() = stack.last()
@@ -89,6 +93,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val shelves = mutableStateMapOf<Shelf, ShelfState>()
     private var shelvesJob: Job? = null
+    /** Shelf results as loaded, regrouped when the internet profile changes. */
+    private val shelfHits = mutableMapOf<Shelf, List<Hit>>()
 
     private val events = Channel<UiEvent>(Channel.BUFFERED)
     val uiEvents = events.receiveAsFlow()
@@ -143,6 +149,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         loadShelves()
+        // A finished speed test or a new network can change which release a home card should open.
+        viewModelScope.launch {
+            network.state.map { it.profile to it.speedMbps }.distinctUntilChanged().drop(1).collect {
+                shelfHits.forEach { (shelf, hits) -> shelves[shelf] = ShelfState(loading = false, entries = group(hits, shelf.popular), failed = hits.isEmpty()) }
+            }
+        }
     }
 
     fun open(screen: Screen) {
@@ -184,30 +196,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             Shelf.entries.map { shelf ->
                 launch {
                     val result = app.sources.browse(shelf.category, shelf.popular)
+                    shelfHits[shelf] = result.hits
                     shelves[shelf] = ShelfState(loading = false, entries = group(result.hits, shelf.popular), failed = result.hits.isEmpty())
                 }
             }
         }
     }
 
-    private fun group(hits: List<Hit>, popular: Boolean): List<ShelfEntry> = hits
-        .groupBy { "${it.info.title.lowercase(Locale.ROOT)}|${it.info.year}" }
-        .map { (key, releases) ->
-            val best = releases.maxBy { it.seeds }
-            val quality = releases.mapNotNull { it.info.quality }.maxOrNull()
-            ShelfEntry(
-                key = key,
-                title = best.info.title,
-                year = best.info.year,
-                badges = listOfNotNull(quality?.label, if (releases.any { it.info.hdr || it.info.dolbyVision }) "HDR" else null),
-                seeds = releases.sumOf { it.seeds },
-                releases = releases.size,
-                query = best.info.searchQuery,
-                hit = best,
-            )
-        }
-        .let { entries -> if (popular) entries.sortedByDescending { it.seeds } else entries }
-        .take(SHELF_SIZE)
+    /** A card opens the best-seeded release that suits the internet, or simply the best-seeded one. */
+    private fun group(hits: List<Hit>, popular: Boolean): List<ShelfEntry> {
+        val status = network.state.value
+        val profile = status.profile
+        return hits
+            .groupBy { "${it.info.title.lowercase(Locale.ROOT)}|${it.info.year}" }
+            .map { (key, releases) ->
+                val fitting = if (profile == null) releases else releases.filter { it.misfit(profile, status.speedMbps) == null }
+                val best = fitting.maxByOrNull { it.seeds } ?: releases.maxBy { it.seeds }
+                val quality = releases.mapNotNull { it.info.quality }.maxOrNull()
+                ShelfEntry(
+                    key = key,
+                    title = best.info.title,
+                    year = best.info.year,
+                    badges = listOfNotNull(quality?.label, if (releases.any { it.info.hdr || it.info.dolbyVision }) "HDR" else null),
+                    seeds = releases.sumOf { it.seeds },
+                    releases = releases.size,
+                    query = best.info.searchQuery,
+                    hit = best,
+                )
+            }
+            .let { entries -> if (popular) entries.sortedByDescending { it.seeds } else entries }
+            .take(SHELF_SIZE)
+    }
 
     // Library actions
 

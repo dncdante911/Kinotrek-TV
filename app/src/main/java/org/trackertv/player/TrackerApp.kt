@@ -9,6 +9,7 @@ import kotlinx.coroutines.launch
 import org.trackertv.player.data.AppSettings
 import org.trackertv.player.data.LibraryRepository
 import org.trackertv.player.data.Updater
+import org.trackertv.player.net.NetworkMonitor
 import org.trackertv.player.net.SourceSearchClient
 import org.trackertv.player.ui.components.Images
 
@@ -19,10 +20,12 @@ class TrackerApp : Application() {
     val library by lazy { LibraryRepository(this, scope) }
     val sources by lazy { SourceSearchClient(this) }
     val updater by lazy { Updater(this) }
+    val network by lazy { NetworkMonitor(this, settings, scope) }
 
     override fun onCreate() {
         super.onCreate()
         library // start reading the library from disk before the first screen needs it
+        network.start()
         scope.launch(Dispatchers.IO) { Images.trim(this@TrackerApp) }
     }
 }

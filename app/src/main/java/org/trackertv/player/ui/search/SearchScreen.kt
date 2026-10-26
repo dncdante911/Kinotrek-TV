@@ -28,9 +28,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import org.trackertv.player.data.LibrarySnapshot
+import org.trackertv.player.data.Misfit
+import org.trackertv.player.data.StreamFit
 import org.trackertv.player.net.Category
 import org.trackertv.player.net.Hit
 import org.trackertv.player.ui.AppViewModel
@@ -131,6 +134,27 @@ fun SearchScreen(vm: AppViewModel, search: SearchViewModel, voiceAvailable: Bool
             }
         }
 
+        val profile = search.network.profile
+        if (profile != null && !search.loading && (search.hidden > 0 || search.showAll)) {
+            item(key = "profile") {
+                Row(
+                    Modifier.fillMaxWidth().background(Palette.surface, RoundedCornerShape(14.dp)).padding(horizontal = 18.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(Icons.Speed, null, tint = Palette.accent, modifier = Modifier.size(24.dp))
+                    Text(
+                        if (search.showAll) "Показаны все раздачи, в том числе те, что ваш интернет может не потянуть."
+                        else "Режим «${profile.label}»: скрыто ${plural(search.hidden, "раздача", "раздачи", "раздач")}, неподходящих для вашего интернета" +
+                            (search.network.speedMbps?.let { " (${StreamFit.mbpsLabel(it)})" } ?: "") + ".",
+                        style = MaterialTheme.typography.bodyMedium, color = Palette.muted, modifier = Modifier.weight(1f),
+                    )
+                    TvButton(if (search.showAll) "Только подходящие" else "Показать все", onClick = { search.toggleShowAll() },
+                        modifier = Modifier.remembered(memory, "show-all"))
+                }
+            }
+        }
+
         // Sites are an implementation detail: only say something when the user can act or results may be partial.
         val needsLogin = search.errors.any { it.needsLogin }
         val partial = search.errors.any { !it.needsLogin }
@@ -157,6 +181,12 @@ fun SearchScreen(vm: AppViewModel, search: SearchViewModel, voiceAvailable: Bool
             search.mode == SearchMode.SEARCH && search.shownQuery == null -> item(key = "intro") {
                 EmptyState(Icons.Search, "Найдите фильм или сериал", "Нажмите OK на поле ввода, наберите название и выберите раздачу с большим числом сидов.")
             }
+            search.visible.isEmpty() && search.hidden > 0 -> item(key = "empty") {
+                EmptyState(Icons.Speed, "Под ваш интернет раздач нет",
+                    "Все найденные раздачи слишком тяжёлые или слабо сидируются для режима «${profile?.label}». Можно показать их все или сменить режим в настройках.") {
+                    TvButton("Показать все", onClick = { search.toggleShowAll() }, modifier = Modifier.remembered(memory, "retry"))
+                }
+            }
             search.visible.isEmpty() -> item(key = "empty") {
                 EmptyState(Icons.Info, "Ничего не нашлось",
                     if (search.hits.isEmpty()) "Попробуйте другое название, проверьте сеть или выберите другую категорию."
@@ -167,12 +197,14 @@ fun SearchScreen(vm: AppViewModel, search: SearchViewModel, voiceAvailable: Bool
             else -> {
                 item(key = "count") {
                     Text(
-                        plural(search.visible.size, "раздача", "раздачи", "раздач") + " · только живые, по числу сидов",
+                        plural(search.visible.size, "раздача", "раздачи", "раздач") +
+                            if (profile != null && !search.showAll) " · подобраны под ваш интернет, по числу сидов" else " · только живые, по числу сидов",
                         style = MaterialTheme.typography.bodySmall, color = Palette.muted,
                     )
                 }
                 items(search.visible, key = { it.id }) { hit ->
-                    ResultRow(hit, library, vm, Modifier.remembered(memory, hit.id), heartModifier = Modifier.remembered(memory, "fav:${hit.id}"))
+                    ResultRow(hit, library, vm, if (search.showAll) search.misfit(hit) else null,
+                        Modifier.remembered(memory, hit.id), heartModifier = Modifier.remembered(memory, "fav:${hit.id}"))
                 }
             }
         }
@@ -180,7 +212,7 @@ fun SearchScreen(vm: AppViewModel, search: SearchViewModel, voiceAvailable: Bool
 }
 
 @Composable
-private fun ResultRow(hit: Hit, library: LibrarySnapshot, vm: AppViewModel, modifier: Modifier = Modifier, heartModifier: Modifier = Modifier) {
+private fun ResultRow(hit: Hit, library: LibrarySnapshot, vm: AppViewModel, misfit: Misfit?, modifier: Modifier = Modifier, heartModifier: Modifier = Modifier) {
     val favorite = library.find(hit)?.favorite == true
     val info = hit.info
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -196,7 +228,10 @@ private fun ResultRow(hit: Hit, library: LibrarySnapshot, vm: AppViewModel, modi
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     info.badges.forEach { Badge(it, color = Palette.accentDim, contentColor = Palette.accent) }
                     if (info.hevc) Badge("HEVC")
+                    info.rip?.let { Badge(it.label) }
                     if (hit.size.isNotEmpty()) Badge(hit.size)
+                    hit.mbps?.let { Badge("~" + StreamFit.mbpsLabel(it)) }
+                    misfit?.let { Text(it.label, style = MaterialTheme.typography.bodySmall, color = Palette.bad) }
                     hit.dateLabel?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.faint) }
                 }
             }

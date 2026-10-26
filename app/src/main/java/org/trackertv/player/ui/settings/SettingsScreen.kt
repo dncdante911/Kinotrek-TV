@@ -27,6 +27,9 @@ import androidx.tv.material3.Text
 import kotlinx.coroutines.launch
 import org.trackertv.player.BuildConfig
 import org.trackertv.player.data.AudioLanguage
+import org.trackertv.player.net.Link
+import org.trackertv.player.net.NetworkStatus
+import org.trackertv.player.net.SpeedTest
 import org.trackertv.player.net.TorrServerClient
 import org.trackertv.player.torrent.EngineState
 import org.trackertv.player.torrent.LocalTorrentService
@@ -40,6 +43,8 @@ import org.trackertv.player.ui.components.InitialFocus
 import org.trackertv.player.data.DecorMode
 import org.trackertv.player.data.Occasion
 import org.trackertv.player.data.PauseBuffer
+import org.trackertv.player.data.StreamFit
+import org.trackertv.player.data.TrafficMode
 import org.trackertv.player.data.UploadLimit
 import org.trackertv.player.data.Support
 import org.trackertv.player.data.UpdateState
@@ -56,6 +61,7 @@ fun SettingsScreen(vm: AppViewModel) {
     val settings by vm.settings.state.collectAsStateWithLifecycle()
     val engine by LocalTorrentService.state.collectAsStateWithLifecycle()
     val update by vm.updater.state.collectAsStateWithLifecycle()
+    val network by vm.network.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val memory = remember { FocusMemory() }
     val first = remember { FocusRequester() }
@@ -105,6 +111,39 @@ fun SettingsScreen(vm: AppViewModel) {
                 },
                 value = settings.upload.label, modifier = Modifier.remembered(memory, "upload")) {
                 vm.settings.setUpload(UploadLimit.entries[(settings.upload.ordinal + 1) % UploadLimit.entries.size])
+            }
+        }
+
+        item { SectionHeader("Интернет и трафик", Modifier.padding(top = 18.dp, bottom = 4.dp)) }
+        item {
+            SettingRow(Icons.Speed, "Подбор раздач под интернет", trafficDescription(network),
+                value = settings.trafficMode.label, modifier = Modifier.remembered(memory, "traffic")) {
+                vm.settings.setTrafficMode(TrafficMode.entries[(settings.trafficMode.ordinal + 1) % TrafficMode.entries.size])
+            }
+        }
+        item {
+            SettingRow(Icons.Refresh, "Проверить скорость интернета",
+                when {
+                    network.measuring -> "Измеряем скорость и провайдера… около 15 секунд."
+                    network.test != null -> testLabel(network.test!!) + ". Нажмите, чтобы измерить заново."
+                    network.metered -> "Около 15 секунд. На мобильном интернете тест тратит до 10 МБ."
+                    else -> "Около 15 секунд, до 60 МБ трафика. В режиме «Авто» проверка идёт сама раз в 12 часов."
+                },
+                value = when {
+                    network.measuring -> "…"
+                    else -> network.speedMbps?.let(StreamFit::mbpsLabel)
+                },
+                modifier = Modifier.remembered(memory, "speed")) {
+                if (network.measuring || network.link == Link.NONE) {
+                    if (network.link == Link.NONE) vm.toast("Нет подключения к интернету")
+                    return@SettingRow
+                }
+                scope.launch {
+                    val test = vm.network.measure()
+                    val profile = vm.network.state.value.profile
+                    vm.toast(test.mbps?.let { "Скорость ${StreamFit.mbpsLabel(it)}" + (profile?.let { p -> " · режим «${p.label}»" } ?: "") }
+                        ?: "Не удалось измерить: сервер теста не ответил")
+                }
             }
         }
 
@@ -253,6 +292,37 @@ private fun SettingRow(
             value != null -> Text(value, style = MaterialTheme.typography.labelLarge, color = Palette.accent)
         }
     }
+}
+
+private fun trafficDescription(network: NetworkStatus): String {
+    val profile = network.profile ?: return "Показываются все живые раздачи, без учёта скорости интернета."
+    val now = buildList {
+        add(network.link.label)
+        if (network.metered && network.link != Link.CELLULAR) add("лимитный")
+        network.test?.provider?.let(::add)
+        network.speedMbps?.let { add(StreamFit.mbpsLabel(it)) }
+    }.joinToString(" · ")
+    val why = when {
+        network.mode != TrafficMode.AUTO -> ""
+        network.metered -> " Сеть лимитная, поэтому экономим трафик."
+        network.measuring -> " Измеряем скорость…"
+        network.speedMbps == null -> " Скорость ещё не измерена."
+        else -> ""
+    }
+    val prefix = if (network.mode == TrafficMode.AUTO) "Сейчас «${profile.label}»: " else ""
+    return "$prefix${profile.summary}; слабо сидируемые скрыты. $now.$why".replaceFirstChar { it.uppercase() }
+}
+
+private fun testLabel(test: SpeedTest): String {
+    val minutes = ((System.currentTimeMillis() - test.time) / 60_000).toInt()
+    val ago = when {
+        minutes < 1 -> "только что"
+        minutes < 60 -> "${plural(minutes, "минуту", "минуты", "минут")} назад"
+        minutes < 48 * 60 -> "${plural(minutes / 60, "час", "часа", "часов")} назад"
+        else -> "${plural(minutes / 1440, "день", "дня", "дней")} назад"
+    }
+    val speed = test.mbps?.let(StreamFit::mbpsLabel) ?: "не удалось измерить"
+    return listOfNotNull(test.link.label, test.provider, speed).joinToString(" · ") + ", $ago"
 }
 
 private fun updateLabel(state: UpdateState): String = when (state) {

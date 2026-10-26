@@ -16,8 +16,8 @@ android {
         applicationId = "org.trackertv.player"
         minSdk = 28
         targetSdk = 36
-        versionCode = 13
-        versionName = "1.5.0"
+        versionCode = 14
+        versionName = "1.6.0"
     }
 
     signingConfigs {
