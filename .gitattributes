@@ -1,0 +1,7 @@
+# Closed sources of Kinotrek: stored in git as AES-256 ciphertext, plain text only in a working copy
+# that has the key (see tools/kinocrypt.sh). engine/ is TorrServer under GPL-3.0 and stays open.
+app/src/main/java/** filter=kinocrypt diff=kinocrypt -text
+app/src/test/** filter=kinocrypt diff=kinocrypt -text
+
+# Scripts run in bash on every OS.
+*.sh text eol=lf

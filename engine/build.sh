@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Builds libtorrserver.so (TorrServer MatriX + jnibridge) for every ABI into app/src/main/jniLibs.
+# Builds the TorrServer MatriX engine (+ runner) as a separate executable for every ABI into
+# app/src/main/jniLibs. It is named libtorrserver.so only so that Android installs it with the app's
+# native libraries, the one place an app may run programs from; the app starts it as its own process.
 #
 #   ANDROID_NDK_HOME=/path/to/android-ndk-r28c ./engine/build.sh [tag]
 #
@@ -30,8 +32,8 @@ if [ -d "$SRC/.git" ]; then
 else
   git clone -q --depth 1 --branch "$TAG" https://github.com/YouROK/TorrServer.git "$SRC"
 fi
-rm -rf "$SRC/server/jnibridge"
-cp -r "$ENGINE/jnibridge" "$SRC/server/jnibridge"
+rm -rf "$SRC/server/jnibridge" "$SRC/server/kinotrek"
+cp -r "$ENGINE/runner" "$SRC/server/kinotrek"
 # Files that replace upstream ones (Swagger UI stub).
 cp -r "$ENGINE/overlay/." "$SRC/"
 # The web UI is embedded into the binary (about 21 MB); the app never opens it, so the pages stay empty.
@@ -48,8 +50,7 @@ for spec in "arm64:aarch64-linux-android:arm64-v8a" "arm:armv7a-linux-androideab
   mkdir -p "$OUT/$abi"
   GOOS=android GOARCH="$arch" GOARM=7 CGO_ENABLED=1 \
     CC="$TOOLCHAIN/$triple$API-clang$EXT" CXX="$TOOLCHAIN/$triple$API-clang++$EXT" \
-    go build -trimpath -tags=nosqlite,nomsgpack -buildmode=c-shared -ldflags="$LDFLAGS" \
-      -o "$OUT/$abi/libtorrserver.so" ./jnibridge
-  rm -f "$OUT/$abi/libtorrserver.h"
+    go build -trimpath -tags=nosqlite,nomsgpack -buildmode=pie -ldflags="$LDFLAGS" \
+      -o "$OUT/$abi/libtorrserver.so" ./kinotrek
 done
 echo "Built $TAG into $OUT"

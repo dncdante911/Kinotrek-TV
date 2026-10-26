@@ -1,2 +1,1 @@
-# TorrServer engine: JNI looks its native methods up by class and method name.
--keep class org.trackertv.player.torrent.TorrServerEngine { *; }
+# The TorrServer engine is a separate program started by TorrServerEngine; nothing is looked up by name.
