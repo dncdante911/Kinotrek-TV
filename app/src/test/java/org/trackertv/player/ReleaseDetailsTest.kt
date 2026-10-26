@@ -53,7 +53,9 @@ class ReleaseDetailsTest {
         assertEquals(1, d.audio.size)
         assertTrue(d.synopsis!!.startsWith("Двое друзей"))
         assertTrue(d.synopsis!!.contains("— друг друга"))
-        assertEquals(listOf("http://img.example.org/thumb/s1.jpg", "http://img.example.org/thumb/s2.jpg"), d.screenshots)
+        // Thumbnails linked to the full picture give the full picture, sharp enough for a backdrop.
+        assertEquals(listOf("http://img.example.org/big/s1.png", "http://img.example.org/big/s2.png"), d.screenshots)
+        assertNull(d.trailer)
         // MediaInfo spoiler is not part of the description.
         assertNull(d.field("Format"))
     }
@@ -80,5 +82,17 @@ class ReleaseDetailsTest {
     @Test
     fun pageWithoutDescriptionGivesNull() {
         assertNull(ReleaseDetails.parseRutor("<html>no details</html>", "https://rutor.info/torrent/2"))
+    }
+
+    @Test
+    fun trailerFromEmbeddedVideo() {
+        val page = rutor.replace(
+            "</textarea></div>",
+            "</textarea></div><div class=\"hidewrap\"><div class=\"hidehead\">Трейлер</div>" +
+                "<iframe src=\"https://www.youtube.com/embed/dQw4w9WgXcQ?rel=0\"></iframe></div>",
+        )
+        assertEquals("dQw4w9WgXcQ", ReleaseDetails.parseRutor(page, "http://rutor.info/torrent/1")?.trailer)
+        val link = rutor.replace("<b>Субтитры: </b>нет<br />", "<b>Субтитры: </b>нет<br /><a href=\"https://youtu.be/abcDEF12345\">Трейлер</a><br />")
+        assertEquals("abcDEF12345", ReleaseDetails.parseRutor(link, "http://rutor.info/torrent/1")?.trailer)
     }
 }

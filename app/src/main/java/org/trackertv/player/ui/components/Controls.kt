@@ -249,7 +249,7 @@ fun TvTextField(
 fun SectionHeader(title: String, modifier: Modifier = Modifier, subtitle: String? = null, trailing: (@Composable () -> Unit)? = null) {
     Row(modifier, verticalAlignment = Alignment.Bottom) {
         androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.headlineSmall, color = Palette.text)
+            Text(title, style = MaterialTheme.typography.titleLarge, color = Palette.text)
             subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Palette.muted) }
         }
         trailing?.invoke()

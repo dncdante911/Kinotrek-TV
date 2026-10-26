@@ -10,27 +10,27 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Typography
 import androidx.tv.material3.darkColorScheme
 
-/** Palette tuned for a dark room: deep blue-black, one teal accent, white focus. */
+/** Palette tuned for a dark room: neutral graphite, one teal accent, white focus. Posters bring the color. */
 object Palette {
-    val background = Color(0xFF0A0E16)
-    val surface = Color(0xFF141A25)
-    val surfaceHigh = Color(0xFF1D2533)
-    val surfaceHigher = Color(0xFF283245)
-    val focus = Color(0xFFF2F5FA)
-    val onFocus = Color(0xFF0A0E16)
+    val background = Color(0xFF16171A)
+    val surface = Color(0xFF212226)
+    val surfaceHigh = Color(0xFF2B2D32)
+    val surfaceHigher = Color(0xFF383A40)
+    val focus = Color(0xFFF2F2F2)
+    val onFocus = Color(0xFF141518)
     val accent = Color(0xFF5EE0D2)
     val accentDim = Color(0x335EE0D2)
-    val text = Color(0xFFF2F5FA)
-    val muted = Color(0xFFA3AEC0)
-    val faint = Color(0xFF6E7A8E)
+    val text = Color(0xFFF2F2F2)
+    val muted = Color(0xFFA7A9AF)
+    val faint = Color(0xFF72757C)
     val good = Color(0xFF4FD68E)
     val fair = Color(0xFFF2C14E)
     val bad = Color(0xFFFF6B6B)
     val heart = Color(0xFFFF5C7A)
 
-    val canvas = Brush.verticalGradient(listOf(Color(0xFF101828), background, background))
-    val hero = Brush.linearGradient(listOf(Color(0xFF1B4A5A), Color(0xFF172A45), Color(0xFF151B2E)))
-    val scrim = Brush.verticalGradient(listOf(Color.Transparent, Color(0xE60A0E16)))
+    val canvas = Brush.verticalGradient(listOf(Color(0xFF202125), background, background))
+    val hero = Brush.linearGradient(listOf(Color(0xFF2E3036), Color(0xFF232428), Color(0xFF1B1C1F)))
+    val scrim = Brush.verticalGradient(listOf(Color.Transparent, Color(0xE616171A)))
 
     /** Poster placeholders: a pleasant gradient picked by title so the same video keeps its color. */
     private val posters = listOf(
@@ -45,6 +45,9 @@ object Palette {
     )
 
     fun poster(seed: String): Brush = Brush.linearGradient(posters[(seed.hashCode() and Int.MAX_VALUE) % posters.size])
+
+    /** Glow for a card whose poster has not loaded: the brighter color of its placeholder. */
+    fun posterTint(seed: String): Color = posters[(seed.hashCode() and Int.MAX_VALUE) % posters.size][0]
 }
 
 private val typography = Typography(

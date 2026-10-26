@@ -1,5 +1,24 @@
 package org.trackertv.player.ui.torrent
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.LocalContentColor
+import androidx.tv.material3.Surface
+import org.trackertv.player.data.LibrarySnapshot
+import org.trackertv.player.data.Progress
+import org.trackertv.player.net.VideoFile
+import org.trackertv.player.ui.components.Images
+import org.trackertv.player.ui.components.TvChip
+import org.trackertv.player.ui.release.PageBackdrop
+import org.trackertv.player.ui.release.PanelAction
+import org.trackertv.player.ui.release.PanelRow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -109,6 +128,21 @@ private class TorrentSession(private val app: TrackerApp, private val request: T
     }
 }
 
+/** A file of the torrent with the season and episode read from its name, when it has them. */
+internal class Episode(val index: Int, val file: VideoFile) {
+    private val match = SEASON_EPISODE.find(file.label)
+    val season: Int = match?.groupValues?.get(1)?.toInt() ?: NO_SEASON
+    val number: Int? = match?.groupValues?.get(2)?.toInt()
+}
+
+private val SEASON_EPISODE = Regex("^S(\\d{2})E(\\d{2,3})$")
+private const val NO_SEASON = -1
+
+/**
+ * Opens a torrent and lists its files, after the «Зеркало» season screen: the release and what to
+ * do on the left, seasons and episodes on the right. A single file, or "Продолжить" from the
+ * item page, starts playing as soon as the torrent is open.
+ */
 @Composable
 fun TorrentScreen(vm: AppViewModel, request: TorrentRequest) {
     val context = LocalContext.current
@@ -125,7 +159,10 @@ fun TorrentScreen(vm: AppViewModel, request: TorrentRequest) {
     }
 
     val state = session.state
-    val info = (state as? TorrentState.Ready)?.item?.info ?: org.trackertv.player.data.ReleaseInfo.parse(request.title)
+    val ready = state as? TorrentState.Ready
+    val info = ready?.item?.info ?: org.trackertv.player.data.ReleaseInfo.parse(request.title)
+    val poster = ready?.item?.poster ?: request.poster ?: request.hit?.let(context.app.sources::knownPoster)
+        ?: request.magnet?.let { library.find(it)?.poster }
 
     fun play(ready: TorrentState.Ready, index: Int) {
         val files = ready.info.files
@@ -137,151 +174,207 @@ fun TorrentScreen(vm: AppViewModel, request: TorrentRequest) {
         vm.send(UiEvent.Play(PlaybackRequest(ready.item.url, entries, index, progress?.positionMs ?: 0, torrent = true)))
     }
 
-    // A single-file release needs no choice: start it right away, once.
+    // Where the user stopped, and what "OK" should start: that file again, or the next one.
+    val resumeKey = ready?.let { library.find(it.item.url)?.resumeKey }
+    val resumeIndex = ready?.info?.files?.indexOfFirst { LibraryItem.fileKey(ready.item.url, it.id) == resumeKey } ?: -1
+    val resumeProgress = resumeKey?.let(library.progress::get)
+    val target = when {
+        ready == null -> -1
+        resumeIndex >= 0 && resumeProgress?.finished != true -> resumeIndex
+        resumeIndex >= 0 && resumeIndex + 1 < ready.info.files.size -> resumeIndex + 1
+        else -> 0
+    }
+
     LaunchedEffect(state) {
-        if (state is TorrentState.Ready && state.info.files.size == 1 && !session.autoPlayed) {
+        if (state !is TorrentState.Ready || session.autoPlayed) return@LaunchedEffect
+        if (state.info.files.size == 1 || (request.resume && resumeIndex >= 0)) {
             session.autoPlayed = true
-            play(state, 0)
+            play(state, if (state.info.files.size == 1) 0 else target)
         }
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 8.dp, bottom = 48.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item(key = "header") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val poster = (state as? TorrentState.Ready)?.item?.poster ?: request.poster ?: request.hit?.let(context.app.sources::knownPoster)
-                    ?: request.magnet?.let { library.find(it)?.poster }
-                if (poster != null) {
-                    PosterArt(info.title, info.title, Modifier.size(width = 100.dp, height = 150.dp).clip(RoundedCornerShape(14.dp)), letterSize = 72,
-                        imageUrl = poster, imageWidthPx = 240)
-                } else {
-                    PosterArt(info.title, info.title, Modifier.size(width = 240.dp, height = 135.dp).clip(RoundedCornerShape(18.dp)), letterSize = 96)
-                }
-                Spacer(Modifier.width(28.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(info.title, style = MaterialTheme.typography.headlineMedium, color = Palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    listOfNotNull(info.original, info.year).joinToString(" · ").takeIf { it.isNotEmpty() }?.let {
-                        Text(it, style = MaterialTheme.typography.bodyLarge, color = Palette.muted, maxLines = 1)
-                    }
-                    if (info.details.isNotEmpty()) Text(info.details, style = MaterialTheme.typography.bodySmall, color = Palette.faint, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        info.badges.forEach { Badge(it, color = Palette.accentDim, contentColor = Palette.accent) }
-                        if (info.hevc) Badge("HEVC")
+    Box(Modifier.fillMaxSize()) {
+        PageBackdrop(null, Images.tint(poster) ?: Palette.posterTint(info.title))
+        Row(Modifier.fillMaxSize()) {
+            Column(Modifier.width(430.dp).fillMaxHeight().padding(start = 48.dp, end = 20.dp, top = 8.dp, bottom = 24.dp)) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    PosterArt(info.title, info.title, Modifier.width(112.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)),
+                        letterSize = 64, imageUrl = poster, imageWidthPx = 240)
+                    Spacer(Modifier.width(18.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(if (info.series) "СЕРИАЛ" else "РАЗДАЧА", style = MaterialTheme.typography.labelSmall, color = Palette.accent)
+                        Text(info.title, style = MaterialTheme.typography.headlineSmall, color = Palette.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        listOfNotNull(info.original, info.year).joinToString(" · ").takeIf { it.isNotEmpty() }?.let {
+                            Text(it, style = MaterialTheme.typography.bodyMedium, color = Palette.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            info.badges.forEach { Badge(it, color = Palette.accentDim, contentColor = Palette.accent) }
+                            if (info.hevc) Badge("HEVC")
+                        }
                     }
                 }
-            }
-            Spacer(Modifier.height(18.dp))
-        }
-
-        when (state) {
-            is TorrentState.Preparing -> item(key = "preparing") {
-                Column(
-                    Modifier.fillMaxWidth().background(Palette.surface, RoundedCornerShape(24.dp)).padding(32.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Spinner(size = 56.dp)
-                    Spacer(Modifier.height(18.dp))
-                    Text(state.step, style = MaterialTheme.typography.titleLarge, color = Palette.text)
-                    state.status?.let { status ->
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "Пиров: ${status.peers} · сидов: ${status.seeders}" + if (status.speedBytes > 0) " · ${sizeLabel(status.speedBytes)}/с" else "",
-                            style = MaterialTheme.typography.bodyMedium, color = Palette.muted,
-                        )
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    Text("Обычно это занимает 5–30 секунд.", style = MaterialTheme.typography.bodySmall, color = Palette.faint)
-                    Spacer(Modifier.height(22.dp))
-                    TvButton("Отмена", icon = Icons.Close, onClick = { vm.back() }, modifier = Modifier.focusRequester(primary))
-                }
-                LaunchedEffect(Unit) { runCatching { primary.requestFocus() } }
-            }
-
-            is TorrentState.Failed -> item(key = "failed") {
-                Column(Modifier.fillMaxWidth().background(Palette.surface, RoundedCornerShape(24.dp)).padding(32.dp)) {
-                    Text("Раздача не открылась", style = MaterialTheme.typography.headlineSmall, color = Palette.text)
-                    Spacer(Modifier.height(8.dp))
-                    Text(state.message, style = MaterialTheme.typography.bodyLarge, color = Palette.muted)
-                    Spacer(Modifier.height(22.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        TvButton("Повторить", icon = Icons.Refresh, primary = true, onClick = session::start, modifier = Modifier.focusRequester(primary))
-                        TvButton("Другие раздачи", icon = Icons.Search, onClick = {
+                Spacer(Modifier.height(18.dp))
+                val actions = when (state) {
+                    is TorrentState.Preparing -> listOf(PanelAction("cancel", "Отмена", null, Icons.Close) { vm.back() })
+                    is TorrentState.Failed -> listOf(
+                        PanelAction("retry", "Повторить", null, Icons.Refresh) { session.start() },
+                        PanelAction("others", "Другие раздачи", null, Icons.Search) {
                             vm.back()
                             vm.open(Screen.Search)
-                        })
-                        TvButton("Настройки сервера", icon = Icons.Settings, onClick = { vm.open(Screen.Settings) })
+                        },
+                        PanelAction("server", "Настройки сервера", null, Icons.Settings) { vm.open(Screen.Settings) },
+                    )
+                    is TorrentState.Ready -> {
+                        val files = state.info.files
+                        val favorite = library.find(state.item.url)?.favorite == true
+                        listOfNotNull(
+                            when {
+                                resumeIndex >= 0 && resumeProgress != null && !resumeProgress.finished -> PanelAction("resume", "Продолжить",
+                                    "${files[resumeIndex].label} · ${PlayerActivity.formatTime(resumeProgress.positionMs)}", Icons.Play) { play(state, resumeIndex) }
+                                target > 0 -> PanelAction("resume", "Следующая", files[target].label, Icons.Play) { play(state, target) }
+                                else -> PanelAction("resume", if (files.size > 1) "С первой серии" else "Смотреть", files.first().label, Icons.Play) { play(state, 0) }
+                            },
+                            PanelAction("trailer", "Трейлер", "откроется в YouTube", Icons.Movie) { vm.trailer(info.title, info.year, null) },
+                            PanelAction("favorite", if (favorite) "В избранном" else "В избранное", null, if (favorite) Icons.Favorite else Icons.FavoriteBorder) {
+                                vm.toggleFavorite(library.find(state.item.url) ?: state.item)
+                            },
+                            PanelAction("back", "Назад", null, Icons.Back) { vm.back() },
+                        )
                     }
                 }
-                LaunchedEffect(Unit) { runCatching { primary.requestFocus() } }
+                actions.forEachIndexed { index, action ->
+                    PanelRow(action, Modifier.remembered(memory, action.key).let { if (index == 0) it.focusRequester(primary) else it })
+                }
             }
 
-            is TorrentState.Ready -> {
-                val files = state.info.files
-                val resumeKey = library.find(state.item.url)?.resumeKey
-                val resumeIndex = files.indexOfFirst { LibraryItem.fileKey(state.item.url, it.id) == resumeKey }
-                val resumeProgress = resumeKey?.let(library.progress::get)
-                item(key = "actions") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (resumeIndex >= 0 && resumeProgress != null && !resumeProgress.finished) {
-                            TvButton(
-                                "Продолжить: ${files[resumeIndex].label.take(32)} · ${PlayerActivity.formatTime(resumeProgress.positionMs)}",
-                                icon = Icons.Play, primary = true, onClick = { play(state, resumeIndex) },
-                                modifier = Modifier.focusRequester(primary).remembered(memory, "resume"),
-                            )
-                        } else {
-                            val next = if (resumeIndex >= 0 && resumeIndex + 1 < files.size) resumeIndex + 1 else 0
-                            TvButton(
-                                if (next > 0) "Следующий: ${files[next].label.take(32)}" else if (files.size > 1) "Смотреть с первого файла" else "Смотреть",
-                                icon = Icons.Play, primary = true, onClick = { play(state, next) },
-                                modifier = Modifier.focusRequester(primary).remembered(memory, "resume"),
-                            )
-                        }
-                        val favorite = library.find(state.item.url)?.favorite == true
-                        TvButton(
-                            if (favorite) "В избранном" else "В избранное",
-                            icon = if (favorite) Icons.Favorite else Icons.FavoriteBorder,
-                            onClick = { vm.toggleFavorite(library.find(state.item.url) ?: state.item) },
-                            modifier = Modifier.remembered(memory, "favorite"),
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(plural(files.size, "видеофайл", "видеофайла", "видеофайлов") + " · " + sizeLabel(files.sumOf { it.length }),
-                            style = MaterialTheme.typography.bodyMedium, color = Palette.muted)
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-                itemsIndexed(files, key = { _, file -> file.id }) { index, file ->
-                    val progress = library.progress[LibraryItem.fileKey(state.item.url, file.id)]
-                    ListRow(onClick = { play(state, index) }, modifier = Modifier.remembered(memory, "file:${file.id}")) {
-                        Text("${index + 1}", style = MaterialTheme.typography.titleMedium, color = Palette.faint, modifier = Modifier.width(36.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(file.label, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            val folder = file.folder?.takeIf { files.size > 1 }
+            Box(Modifier.weight(1f).fillMaxHeight().padding(end = 48.dp)) {
+                when (state) {
+                    is TorrentState.Preparing -> Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Spinner(size = 56.dp)
+                        Spacer(Modifier.height(18.dp))
+                        Text(state.step, style = MaterialTheme.typography.titleLarge, color = Palette.text)
+                        state.status?.let { status ->
+                            Spacer(Modifier.height(6.dp))
                             Text(
-                                listOfNotNull(if (file.label != file.name) file.name else null, folder).joinToString(" · ").ifEmpty { file.fileName },
-                                style = MaterialTheme.typography.bodySmall, color = Palette.faint, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                "Пиров: ${status.peers} · сидов: ${status.seeders}" + if (status.speedBytes > 0) " · ${sizeLabel(status.speedBytes)}/с" else "",
+                                style = MaterialTheme.typography.bodyMedium, color = Palette.muted,
                             )
-                            if (progress != null && progress.durationMs > 0 && !progress.finished) {
-                                Spacer(Modifier.height(6.dp))
-                                ProgressLine(progress.fraction, Modifier.fillMaxWidth(0.6f))
-                            }
                         }
-                        when {
-                            progress?.finished == true -> Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Check, null, tint = Palette.good, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Просмотрено", style = MaterialTheme.typography.bodySmall, color = Palette.good)
-                            }
-                            progress != null && progress.durationMs > 0 -> Text(remainingLabel(progress.remainingMs), style = MaterialTheme.typography.bodySmall, color = Palette.muted)
-                        }
-                        Text(sizeLabel(file.length), style = MaterialTheme.typography.bodyMedium, color = Palette.muted)
+                        Spacer(Modifier.height(6.dp))
+                        Text("Обычно это занимает 5–30 секунд.", style = MaterialTheme.typography.bodySmall, color = Palette.faint)
+                    }
+                    is TorrentState.Failed -> Column(Modifier.align(Alignment.CenterStart).fillMaxWidth(0.85f)) {
+                        Text("Раздача не открылась", style = MaterialTheme.typography.headlineSmall, color = Palette.text)
+                        Spacer(Modifier.height(8.dp))
+                        Text(state.message, style = MaterialTheme.typography.bodyLarge, color = Palette.muted)
+                    }
+                    is TorrentState.Ready -> Episodes(state, library, memory, resumeIndex, ::play)
+                }
+            }
+        }
+    }
+    // While preparing or after an error the first action has focus; the file list restores its own.
+    if (state is TorrentState.Ready) InitialFocus(memory, primary) else LaunchedEffect(state::class) { runCatching { primary.requestFocus() } }
+}
+
+@Composable
+private fun Episodes(
+    state: TorrentState.Ready,
+    library: LibrarySnapshot,
+    memory: FocusMemory,
+    resumeIndex: Int,
+    play: (TorrentState.Ready, Int) -> Unit,
+) {
+    val files = state.info.files
+    val episodes = remember(files) { files.mapIndexed { index, file -> Episode(index, file) } }
+    val seasons = remember(episodes) { episodes.map { it.season }.distinct().sortedWith(compareBy { if (it == NO_SEASON) Int.MAX_VALUE else it }) }
+    var season by rememberSaveable(state.info.hash) {
+        mutableIntStateOf(episodes.getOrNull(resumeIndex)?.season ?: seasons.first())
+    }
+    val shown = if (seasons.size > 1) episodes.filter { it.season == season } else episodes
+
+    Column(Modifier.fillMaxSize()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (seasons.size > 1) {
+                LazyRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
+                    items(seasons) { value ->
+                        TvChip(if (value == NO_SEASON) "Другое" else "Сезон $value", selected = value == season, onClick = { season = value },
+                            modifier = Modifier.remembered(memory, "season:$value"))
                     }
                 }
-                item(key = "focus") { InitialFocus(memory, primary) }
+            } else {
+                Text(if (state.item.info.series) "Серии" else "Файлы", style = MaterialTheme.typography.titleLarge, color = Palette.text, modifier = Modifier.weight(1f))
             }
+            Text(plural(files.size, "файл", "файла", "файлов") + " · " + sizeLabel(files.sumOf { it.length }),
+                style = MaterialTheme.typography.bodyMedium, color = Palette.muted)
+        }
+        Spacer(Modifier.height(6.dp))
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp), contentPadding = PaddingValues(bottom = 36.dp)) {
+            items(shown, key = { it.file.id }) { episode ->
+                EpisodeRow(
+                    episode,
+                    library.progress[LibraryItem.fileKey(state.item.url, episode.file.id)],
+                    current = episode.index == resumeIndex,
+                    multiple = files.size > 1,
+                    onClick = { play(state, episode.index) },
+                    modifier = Modifier.remembered(memory, "file:${episode.file.id}"),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun EpisodeRow(episode: Episode, progress: Progress?, current: Boolean, multiple: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(6.dp)
+    val file = episode.file
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().onFocusChanged { focused = it.hasFocus },
+        shape = ClickableSurfaceDefaults.shape(shape),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = if (current) Palette.surfaceHigh.copy(alpha = 0.8f) else Palette.surface.copy(alpha = 0.55f),
+            contentColor = Palette.text,
+            focusedContainerColor = Palette.focus,
+            focusedContentColor = Palette.onFocus,
+        ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.015f),
+    ) {
+        val dim = if (focused) Palette.onFocus.copy(alpha = 0.6f) else Palette.muted
+        Row(Modifier.padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            val finished = progress?.finished == true
+            // Where the user stopped, or what is already seen; the title carries the number.
+            Box(Modifier.width(40.dp), contentAlignment = Alignment.CenterStart) {
+                when {
+                    finished -> Icon(Icons.Check, "Просмотрено", tint = if (focused) Palette.onFocus else Palette.good, modifier = Modifier.size(22.dp))
+                    current -> Icon(Icons.Play, "Остановились здесь", tint = if (focused) Palette.onFocus else Palette.accent, modifier = Modifier.size(26.dp))
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    episode.number?.let { "$it серия" } ?: "${episode.index + 1}. ${file.label}",
+                    style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    color = if (finished && !focused) Palette.muted else LocalContentColor.current,
+                )
+                val folder = file.folder?.takeIf { multiple }
+                Text(
+                    listOfNotNull(if (episode.number != null || file.label != file.name) file.name else null, folder).joinToString(" · ").ifEmpty { file.fileName },
+                    style = MaterialTheme.typography.bodySmall, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                if (progress != null && progress.durationMs > 0 && !finished) {
+                    Spacer(Modifier.height(6.dp))
+                    ProgressLine(progress.fraction, Modifier.fillMaxWidth(0.6f))
+                }
+            }
+            Spacer(Modifier.width(14.dp))
+            when {
+                finished -> Text("Просмотрено", style = MaterialTheme.typography.bodySmall, color = if (focused) Palette.onFocus else Palette.good)
+                progress != null && progress.durationMs > 0 -> Text(remainingLabel(progress.remainingMs), style = MaterialTheme.typography.bodySmall, color = dim)
+            }
+            Spacer(Modifier.width(18.dp))
+            Text(sizeLabel(file.length), style = MaterialTheme.typography.bodyMedium, color = dim)
         }
     }
 }

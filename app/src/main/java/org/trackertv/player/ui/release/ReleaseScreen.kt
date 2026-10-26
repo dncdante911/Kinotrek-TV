@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
@@ -23,22 +25,27 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
@@ -49,22 +56,19 @@ import org.trackertv.player.net.ReleaseDetails
 import org.trackertv.player.ui.AppViewModel
 import org.trackertv.player.ui.Screen
 import org.trackertv.player.ui.TorrentRequest
+import org.trackertv.player.ui.plural
+import org.trackertv.player.ui.remainingLabel
 import org.trackertv.player.ui.components.Badge
 import org.trackertv.player.ui.components.FocusMemory
+import org.trackertv.player.ui.components.Images
 import org.trackertv.player.ui.components.InitialFocus
-import org.trackertv.player.ui.components.LoadingBlock
-import org.trackertv.player.ui.components.PosterArt
 import org.trackertv.player.ui.components.RemoteImage
-import org.trackertv.player.ui.components.SeedsLabel
-import org.trackertv.player.ui.components.TvButton
 import org.trackertv.player.ui.components.remembered
-import org.trackertv.player.ui.decor.LocalOccasion
-import org.trackertv.player.ui.decor.cardDecor
 import org.trackertv.player.ui.search.SearchViewModel
 import org.trackertv.player.ui.theme.Icons
 import org.trackertv.player.ui.theme.Palette
 
-private val CardShape = RoundedCornerShape(18.dp)
+private val CardShape = RoundedCornerShape(8.dp)
 
 private sealed interface Page {
     data object Loading : Page
@@ -73,8 +77,8 @@ private sealed interface Page {
 }
 
 /**
- * The release as the app shows it: poster, facts and story from the tracker page, laid out in
- * the app's own style. "Смотреть" is focused first, so OK twice still starts the video.
+ * The release as the app shows it: facts and story from the tracker page, laid out in the app's
+ * own style. The first action is focused, so OK twice still starts the video.
  */
 @Composable
 fun ReleaseScreen(vm: AppViewModel, search: SearchViewModel, hit: Hit) {
@@ -92,91 +96,80 @@ fun ReleaseScreen(vm: AppViewModel, search: SearchViewModel, hit: Hit) {
     val details = (page as? Page.Ready)?.details
     val poster = details?.poster ?: sources.knownPoster(hit)
     val library by vm.library.snapshot.collectAsStateWithLifecycle()
-    val favorite = library.find(hit)?.favorite == true
+    val saved = library.find(hit)
+    val favorite = saved?.favorite == true
+    val progress = saved?.let(library::resumeOf)?.takeIf { it.durationMs > 0 && !it.finished }
     val info = hit.info
 
     val memory = remember(hit.page) { FocusMemory() }
-    val watch = remember { FocusRequester() }
-    InitialFocus(memory, watch)
+    val first = remember { FocusRequester() }
+    InitialFocus(memory, first)
+
+    val backdrop = rememberBackdrop(details?.screenshots.orEmpty())
+    val facts = listOfNotNull(info.year, if (info.series) "сериал" else "фильм", details?.country, details?.duration).joinToString(" · ")
+    val torrent = TorrentRequest(hit.title, hit.magnet ?: saved?.url, hit, poster, hit.page)
+    val actions = listOfNotNull(
+        if (saved != null && progress != null) PanelAction("resume", "Продолжить",
+            listOfNotNull(saved.resumeLabel?.takeIf { it != saved.title }, remainingLabel(progress.remainingMs)).joinToString(" · "), Icons.Play) {
+            vm.play(saved, resume = true)
+        } else null,
+        PanelAction(
+            "watch",
+            when {
+                progress != null && info.series -> "Серии"
+                progress != null -> "Смотреть сначала"
+                else -> "Смотреть"
+            },
+            listOfNotNull(hit.size.takeIf { it.isNotEmpty() }, hit.seeds.takeIf { it > 0 }?.let { plural(it, "сид", "сида", "сидов") }).joinToString(" · ").ifEmpty { null },
+            if (progress != null && info.series) Icons.Episodes else Icons.Play,
+        ) { vm.open(Screen.Torrent(torrent)) },
+        PanelAction("trailer", "Трейлер", "откроется в YouTube", Icons.Movie) { vm.trailer(info.title, info.year, details?.trailer) },
+        PanelAction("favorite", if (favorite) "В избранном" else "В избранное", if (favorite) "OK — убрать" else "появится на главной",
+            if (favorite) Icons.Favorite else Icons.FavoriteBorder) { vm.favoriteHit(hit) },
+        PanelAction("others", "Другие раздачи", "другое качество и озвучка", Icons.Search) {
+            search.query = info.searchQuery
+            search.submit(info.searchQuery)
+            vm.open(Screen.Search)
+        },
+        PanelAction("back", "Назад", null, Icons.Back) { vm.back() },
+    )
 
     Box(Modifier.fillMaxSize()) {
-        // The poster as a faint backdrop fading into the canvas, the way streaming apps do it.
-        if (poster != null) {
-            RemoteImage(poster, 640, Modifier.fillMaxWidth(0.55f).fillMaxSize().align(Alignment.TopEnd).alpha(0.22f))
-            Box(Modifier.matchParentSize().background(Brush.horizontalGradient(0.35f to Palette.background, 1f to Color.Transparent)))
-            Box(Modifier.matchParentSize().background(Brush.verticalGradient(0.55f to Color.Transparent, 1f to Palette.background)))
-        }
+        PageBackdrop(backdrop, Images.tint(poster) ?: Palette.posterTint(info.title))
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 48.dp, end = 48.dp, top = 8.dp, bottom = 48.dp),
+            contentPadding = PaddingValues(bottom = 48.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
-            item(key = "header") {
-                Row {
-                    Box(Modifier.width(210.dp).aspectRatio(2f / 3f).clip(CardShape).border(1.dp, Palette.surfaceHigher, CardShape)
-                        .cardDecor(LocalOccasion.current, info.title)) {
-                        PosterArt(info.title, info.title, Modifier.fillMaxSize(), letterSize = 120, imageUrl = poster, imageWidthPx = 420)
-                    }
-                    Spacer(Modifier.width(32.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(if (info.series) "СЕРИАЛ" else "ФИЛЬМ", style = MaterialTheme.typography.labelSmall, color = Palette.accent)
-                        Text(info.title, style = MaterialTheme.typography.headlineLarge, color = Palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        val facts = listOfNotNull(info.original, info.year, details?.country, details?.duration).joinToString(" · ")
-                        if (facts.isNotEmpty()) Text(facts, style = MaterialTheme.typography.bodyLarge, color = Palette.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Spacer(Modifier.height(12.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            info.badges.forEach { Badge(it, color = Palette.accentDim, contentColor = Palette.accent) }
-                            if (info.hevc) Badge("HEVC")
-                            if (hit.size.isNotEmpty()) Badge(hit.size)
-                            SeedsLabel(hit.seeds)
-                        }
-                        details?.genres?.takeIf { it.isNotEmpty() }?.let { genres ->
-                            Spacer(Modifier.height(10.dp))
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                genres.take(6).forEach { Badge(it.replaceFirstChar(Char::uppercase)) }
-                            }
-                        }
-                        Spacer(Modifier.height(20.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            TvButton(
-                                "Смотреть", primary = true, icon = Icons.Play,
-                                onClick = { vm.open(Screen.Torrent(TorrentRequest(hit.title, hit.magnet, hit, poster, hit.page))) },
-                                modifier = Modifier.focusRequester(watch).remembered(memory, "watch"),
-                            )
-                            TvButton(
-                                if (favorite) "В избранном" else "В избранное",
-                                icon = if (favorite) Icons.Favorite else Icons.FavoriteBorder,
-                                onClick = { vm.favoriteHit(hit) },
-                                modifier = Modifier.remembered(memory, "favorite"),
-                            )
-                            TvButton("Другие раздачи", icon = Icons.Search, modifier = Modifier.remembered(memory, "others"), onClick = {
-                                search.query = info.searchQuery
-                                search.submit(info.searchQuery)
-                                vm.open(Screen.Search)
-                            })
-                        }
-                        details?.synopsis?.let {
-                            Spacer(Modifier.height(18.dp))
-                            Text(it, style = MaterialTheme.typography.bodyLarge, color = Palette.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                }
+            item(key = "hero") {
+                ReleaseHero(
+                    kind = if (info.series) "СЕРИАЛ" else "ФИЛЬМ",
+                    title = info.title,
+                    original = info.original,
+                    facts = facts,
+                    badges = info.badges + listOfNotNull("HEVC".takeIf { info.hevc }),
+                    genres = details?.genres.orEmpty(),
+                    synopsis = details?.synopsis,
+                    hint = when {
+                        page == Page.Loading -> "Загружаю описание…"
+                        page == Page.Failed -> "Описание не загрузилось — смотреть можно и без него"
+                        progress != null -> "Вы уже начали смотреть — OK, чтобы продолжить"
+                        else -> "Вниз — описание, актёры и данные раздачи"
+                    },
+                    actions = actions,
+                    memory = memory,
+                    firstAction = first,
+                    poster = poster,
+                    showPoster = backdrop == null,
+                    modifier = Modifier.fillParentMaxHeight(),
+                )
             }
-            when (val state = page) {
-                Page.Loading -> item(key = "loading") { LoadingBlock("Загружаю описание…") }
-                Page.Failed -> item(key = "failed") {
-                    Text(
-                        "Описание раздачи не загрузилось — смотреть можно и без него.",
-                        style = MaterialTheme.typography.bodyMedium, color = Palette.muted,
-                    )
-                }
-                is Page.Ready -> sections(state.details, memory)
-            }
+            (page as? Page.Ready)?.let { sections(it.details, memory) }
         }
     }
 }
 
-private fun LazyListScope.sections(details: ReleaseDetails, memory: FocusMemory) {
+internal fun LazyListScope.sections(details: ReleaseDetails, memory: FocusMemory) {
     details.synopsis?.takeIf { it.length > 260 }?.let { story ->
         item(key = "story") { InfoCard("О фильме", memory) { Text(story, style = MaterialTheme.typography.bodyLarge, color = Palette.text) } }
     }
@@ -190,7 +183,7 @@ private fun LazyListScope.sections(details: ReleaseDetails, memory: FocusMemory)
         listOfNotNull(details.subtitles?.let { "Субтитры" to it })
     if (tech.isNotEmpty()) item(key = "tech") { InfoCard("О раздаче", memory) { Facts(tech) } }
     if (details.screenshots.isNotEmpty()) item(key = "shots") {
-        Column {
+        Column(Modifier.padding(start = 48.dp)) {
             Text("Кадры", style = MaterialTheme.typography.titleLarge, color = Palette.text)
             Spacer(Modifier.height(10.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
@@ -216,7 +209,7 @@ private fun LazyListScope.sections(details: ReleaseDetails, memory: FocusMemory)
 private fun InfoCard(title: String, memory: FocusMemory, content: @Composable () -> Unit) {
     Surface(
         onClick = {},
-        modifier = Modifier.fillMaxWidth().remembered(memory, title),
+        modifier = Modifier.padding(horizontal = 48.dp).fillMaxWidth().remembered(memory, title),
         shape = ClickableSurfaceDefaults.shape(CardShape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Palette.surface.copy(alpha = 0.85f), contentColor = Palette.text,

@@ -134,7 +134,7 @@ fun LibraryScreen(vm: AppViewModel) {
                     width = 160.dp,
                     portrait = true,
                     imageUrl = item.poster,
-                    onClick = { vm.play(item) },
+                    onClick = { vm.openItem(item) },
                     onLongClick = { vm.itemActions(item) },
                     modifier = Modifier.fillMaxWidth().remembered(memory, item.id),
                 )

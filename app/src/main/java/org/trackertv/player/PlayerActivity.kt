@@ -193,7 +193,8 @@ class PlayerActivity : ComponentActivity() {
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(30_000)
             .setAllowCrossProtocolRedirects(true)
-            .setUserAgent("TrackerTV/${BuildConfig.VERSION_NAME}")
+            .setUserAgent(request.userAgent ?: "TrackerTV/${BuildConfig.VERSION_NAME}")
+            .apply { request.referer?.let { setDefaultRequestProperties(mapOf("Referer" to it)) } }
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(20_000, 60_000, 2_500, 5_000)
             .build()
@@ -744,6 +745,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun saveProgress(finished: Boolean = false) {
         val exo = player ?: return
+        if (request.live) return
         val entry = request.entries.getOrNull(exo.currentMediaItemIndex) ?: return
         val duration = exo.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0
         val position = if (finished && duration > 0) duration else exo.currentPosition

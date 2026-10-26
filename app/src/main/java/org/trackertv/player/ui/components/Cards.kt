@@ -1,7 +1,9 @@
 package org.trackertv.player.ui.components
 
+import android.graphics.BlurMaskFilter
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -25,15 +27,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -53,7 +63,8 @@ import org.trackertv.player.ui.decor.cardDecor
 import org.trackertv.player.ui.theme.Icons
 import org.trackertv.player.ui.theme.Palette
 
-private val CardShape = RoundedCornerShape(16.dp)
+private val CardShape = RoundedCornerShape(8.dp)
+private val PosterShape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
 
 /**
  * Cover art: the release poster when [imageUrl] is known, over a gradient with the title's
@@ -90,7 +101,10 @@ fun ProgressLine(fraction: Float, modifier: Modifier = Modifier) {
     }
 }
 
-/** Card used in every row and grid, 16:9 or poster-shaped. Long press (hold OK) opens the item's actions. */
+/**
+ * Card used in every row and grid, 16:9 or poster-shaped. Long press (hold OK) opens the item's actions.
+ * In focus the caption turns white and the card glows with its poster's color.
+ */
 @Composable
 fun MediaCard(
     title: String,
@@ -109,44 +123,71 @@ fun MediaCard(
     /** Movie-poster proportions (2:3) instead of the 16:9 thumbnail. */
     portrait: Boolean = false,
 ) {
+    var focused by remember { mutableStateOf(false) }
+    val tint = Images.tint(imageUrl) ?: remember(seed) { Palette.posterTint(seed) }
+    val glow by animateFloatAsState(if (focused) 1f else 0f, tween(220), label = "glow")
+    val ambient = LocalAmbient.current
+    LaunchedEffect(focused, tint) { if (focused) ambient.value = tint }
     Surface(
         onClick = onClick,
         onLongClick = onLongClick,
-        modifier = modifier.width(width),
+        modifier = modifier
+            .width(width)
+            .onFocusChanged { focused = it.hasFocus }
+            .drawBehind { if (glow > 0f) drawGlow(tint, glow) },
         shape = ClickableSurfaceDefaults.shape(CardShape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Palette.surface,
             contentColor = Palette.text,
-            focusedContainerColor = Palette.surfaceHigh,
-            focusedContentColor = Palette.text,
+            focusedContainerColor = Palette.focus,
+            focusedContentColor = Palette.onFocus,
         ),
-        border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(3.dp, Palette.focus), shape = CardShape)),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.07f),
+        border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.focus), shape = CardShape)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
     ) {
         Column {
             PosterArt(
                 seed, title,
-                Modifier.fillMaxWidth().aspectRatio(if (portrait) 2f / 3f else 16f / 9f).clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                Modifier.fillMaxWidth().aspectRatio(if (portrait) 2f / 3f else 16f / 9f).clip(PosterShape)
                     .cardDecor(LocalOccasion.current, title),
                 imageUrl = imageUrl,
                 imageWidthPx = if (portrait) 320 else 480,
             ) {
-                Row(Modifier.align(Alignment.TopStart).padding(10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    badges.take(3).forEach { Badge(it, color = Color.Black.copy(alpha = 0.55f)) }
+                Row(Modifier.align(Alignment.TopStart).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    badges.take(3).forEach { Badge(it, color = Color.Black.copy(alpha = 0.6f)) }
                 }
                 if (favorite) {
-                    Icon(Icons.Favorite, "В избранном", tint = Palette.heart, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp).size(22.dp))
+                    Icon(Icons.Favorite, "В избранном", tint = Palette.heart, modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).size(20.dp))
                 }
-                if (progress != null) ProgressLine(progress, Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp))
+                if (progress != null) ProgressLine(progress, Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp))
             }
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.height(42.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(subtitle.orEmpty(), style = MaterialTheme.typography.bodySmall, color = Palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text(
+                        subtitle.orEmpty(), style = MaterialTheme.typography.bodySmall,
+                        color = if (focused) Palette.onFocus.copy(alpha = 0.62f) else Palette.muted,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                    )
                     corner?.invoke(this)
                 }
             }
         }
+    }
+}
+
+/**
+ * Soft light behind a focused card, as if the poster lit the wall; drawn blurred, so it fades out past
+ * the edges. It stays within ~34 dp of the card: rows clip anything further out with a hard edge.
+ */
+private fun DrawScope.drawGlow(tint: Color, strength: Float) {
+    val spread = 8.dp.toPx()
+    val paint = Paint().apply {
+        color = tint.copy(alpha = strength)
+        asFrameworkPaint().maskFilter = BlurMaskFilter(26.dp.toPx(), BlurMaskFilter.Blur.NORMAL)
+    }
+    drawIntoCanvas {
+        it.drawRoundRect(-spread, -spread, size.width + spread, size.height + spread, spread, spread, paint)
     }
 }
 
@@ -158,7 +199,7 @@ fun SkeletonCard(width: Dp = 248.dp, portrait: Boolean = false) {
         animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "alpha",
     )
     Column(Modifier.width(width).alpha(alpha).background(Palette.surface, CardShape)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(if (portrait) 2f / 3f else 16f / 9f).background(Palette.surfaceHigh, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)))
+        Box(Modifier.fillMaxWidth().aspectRatio(if (portrait) 2f / 3f else 16f / 9f).background(Palette.surfaceHigh, PosterShape))
         Column(Modifier.padding(14.dp)) {
             Box(Modifier.fillMaxWidth(0.8f).height(16.dp).background(Palette.surfaceHigh, RoundedCornerShape(4.dp)))
             Spacer(Modifier.height(10.dp))

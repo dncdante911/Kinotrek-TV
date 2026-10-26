@@ -1,6 +1,15 @@
 package org.trackertv.player.ui.home
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import org.trackertv.player.data.Support
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -10,6 +19,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -20,18 +31,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import org.trackertv.player.data.LibraryItem
@@ -59,7 +63,8 @@ import org.trackertv.player.ui.release.rememberPoster
 import org.trackertv.player.ui.theme.Palette
 import java.util.Calendar
 
-private val RowPadding = PaddingValues(horizontal = 48.dp, vertical = 10.dp)
+// Tall enough for the focused card to grow and glow without being clipped.
+private val RowPadding = PaddingValues(horizontal = 48.dp, vertical = 22.dp)
 private val CardWidth = 170.dp
 
 @Composable
@@ -82,7 +87,7 @@ fun HomeScreen(vm: AppViewModel, search: SearchViewModel, voiceAvailable: Boolea
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 8.dp, bottom = 48.dp),
-        verticalArrangement = Arrangement.spacedBy(26.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (update is UpdateState.Available || update is UpdateState.Downloading || update is UpdateState.Ready || update is UpdateState.Installing) item(key = "update") {
             UpdateBanner(update, onDownload = vm.updater::downloadNow, onInstall = vm::installUpdate,
@@ -141,6 +146,11 @@ fun HomeScreen(vm: AppViewModel, search: SearchViewModel, voiceAvailable: Boolea
         if (recent.isNotEmpty()) {
             item(key = "recent") { LibraryRow("Недавно добавленные", null, recent, library, vm, "recent") }
         }
+
+        if (Support.available) item(key = "support") {
+            SupportNote(onClick = { vm.open(Screen.Support) }, modifier = Modifier.padding(horizontal = 48.dp, vertical = 16.dp),
+                buttonModifier = Modifier.remembered(memory, "support"))
+        }
     }
 }
 
@@ -164,7 +174,7 @@ private fun LibraryRow(title: String, subtitle: String?, items: List<LibraryItem
                     badges = item.info.badges,
                     progress = progress?.takeIf { !it.finished && it.durationMs > 0 }?.fraction,
                     favorite = item.favorite,
-                    onClick = { vm.play(item) },
+                    onClick = { vm.openItem(item) },
                     onLongClick = { vm.itemActions(item) },
                     modifier = Modifier.remembered(vm.homeFocus, "$row:${item.id}"),
                     width = CardWidth,
@@ -225,6 +235,25 @@ private fun DrawScope.heroArt() {
         close()
     }
     drawPath(play, Palette.accent.copy(alpha = 0.55f))
+}
+
+/** A quiet line at the bottom of the home screen; the heart in the top bar leads to the same page. */
+@Composable
+private fun SupportNote(onClick: () -> Unit, modifier: Modifier = Modifier, buttonModifier: Modifier = Modifier) {
+    Row(
+        modifier.fillMaxWidth().background(Palette.surface.copy(alpha = 0.7f), RoundedCornerShape(12.dp)).padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Favorite, null, tint = Palette.heart, modifier = Modifier.size(28.dp))
+        Spacer(Modifier.width(18.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Кинотрек бесплатный и без рекламы", style = MaterialTheme.typography.titleMedium, color = Palette.text)
+            Text("Если он вам нравится, можно поддержать автора: QR-код откроется на экране, оплатить можно с телефона.",
+                style = MaterialTheme.typography.bodySmall, color = Palette.muted)
+        }
+        Spacer(Modifier.width(18.dp))
+        TvButton("Поддержать", icon = Icons.Favorite, onClick = onClick, modifier = buttonModifier)
+    }
 }
 
 private fun greeting(): String = when (Calendar.getInstance().get(Calendar.HOUR_OF_DAY)) {

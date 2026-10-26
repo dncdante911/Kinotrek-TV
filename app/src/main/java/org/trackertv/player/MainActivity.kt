@@ -1,6 +1,7 @@
 package org.trackertv.player
 
 import android.Manifest
+import android.app.SearchManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -98,12 +99,35 @@ class MainActivity : ComponentActivity() {
                 runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:$packageName".toUri())) }
             }
             UiEvent.OpenDisplaySettings -> openDisplaySettings()
+            is UiEvent.OpenTrailer -> openTrailer(event.videoId, event.query)
             UiEvent.ShowDeviceCaps -> vm.showDialog(DialogSpec.Info(
                 title = "Возможности ТВ",
                 rows = DeviceCaps(this).report().map { Triple(it.label, it.value, it.supported) },
                 actions = listOf(DialogAction("Настройки экрана", Icons.Tv) { openDisplaySettings() }),
             ))
         }
+    }
+
+    /**
+     * The trailer in whichever YouTube app the TV has: the official one, then SmartTube, then any app
+     * that opens YouTube links. Without a video id, the app's own search is asked for the trailer.
+     */
+    private fun openTrailer(videoId: String?, query: String) {
+        val intents = if (videoId != null) {
+            val uri = "https://www.youtube.com/watch?v=$videoId".toUri()
+            YOUTUBE_APPS.map { Intent(Intent.ACTION_VIEW, uri).setPackage(it) } + Intent(Intent.ACTION_VIEW, uri)
+        } else {
+            YOUTUBE_APPS.map { Intent(Intent.ACTION_SEARCH).setPackage(it).putExtra(SearchManager.QUERY, query) }
+        }
+        for (intent in intents) {
+            try {
+                startActivity(intent)
+                return
+            } catch (e: ActivityNotFoundException) {
+            } catch (e: SecurityException) {
+            }
+        }
+        vm.toast(if (videoId != null) "Нет приложения, которое открывает YouTube" else "Трейлер не найден. Для трейлеров нужен YouTube или SmartTube.")
     }
 
     private fun startVoice() {
@@ -167,5 +191,11 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TITLE = "title"
+        private val YOUTUBE_APPS = listOf(
+            "com.google.android.youtube.tv",
+            "com.teamsmart.videomanager.tv",
+            "com.liskovsoft.smarttubetv.beta",
+            "com.google.android.youtube",
+        )
     }
 }

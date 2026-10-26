@@ -27,6 +27,7 @@ import org.trackertv.player.data.Support
 import org.trackertv.player.data.UpdateState
 import org.trackertv.player.net.Category
 import org.trackertv.player.net.Hit
+import org.trackertv.player.net.Trailers
 import org.trackertv.player.player.PlaybackEntry
 import org.trackertv.player.player.PlaybackRequest
 import org.trackertv.player.ui.components.DialogAction
@@ -35,16 +36,27 @@ import org.trackertv.player.ui.components.FocusMemory
 import org.trackertv.player.ui.theme.Icons
 import java.util.Locale
 
-enum class Tab(val label: String) { HOME("Главная"), SEARCH("Поиск"), LIBRARY("Библиотека"), SETTINGS("Настройки") }
+enum class Tab(val label: String) { HOME("Главная"), SEARCH("Поиск"), TV("ТВ"), LIBRARY("Библиотека"), SETTINGS("Настройки") }
 
 /** A torrent to open: either a known magnet or a search hit whose page has it. */
-data class TorrentRequest(val title: String, val magnet: String? = null, val hit: Hit? = null, val poster: String? = null, val page: String? = null)
+data class TorrentRequest(
+    val title: String,
+    val magnet: String? = null,
+    val hit: Hit? = null,
+    val poster: String? = null,
+    val page: String? = null,
+    /** Start the file watched last as soon as the torrent opens ("Продолжить" on the item page). */
+    val resume: Boolean = false,
+)
 
 sealed interface Screen {
     val tab: Tab
     data object Home : Screen { override val tab = Tab.HOME }
     data object Search : Screen { override val tab = Tab.SEARCH }
     data object Library : Screen { override val tab = Tab.LIBRARY }
+    data object Tv : Screen { override val tab = Tab.TV }
+    /** Page of something already in the library: what it is, where it stopped, what to do with it. */
+    data class Item(val url: String) : Screen { override val tab = Tab.LIBRARY }
     data object Settings : Screen { override val tab = Tab.SETTINGS }
     data class Torrent(val request: TorrentRequest) : Screen { override val tab = Tab.SEARCH }
     /** Description page of a release, styled by the app; "Смотреть" leads to [Torrent]. */
@@ -62,6 +74,8 @@ sealed interface UiEvent {
     data object ShowDeviceCaps : UiEvent
     data object AllowInstalls : UiEvent
     data object CancelVoice : UiEvent
+    /** A YouTube video, or a search for [query] when no video was found. */
+    data class OpenTrailer(val videoId: String?, val query: String) : UiEvent
 }
 
 /** Home rows filled from Rutor; releases of the same video are grouped into one card. */
@@ -139,8 +153,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         showDialog(DialogSpec.Actions(
             title = "Обновить до ${ready.release.version}?",
-            message = ready.release.notes.ifBlank { "Новая версия Кинотрека." }.take(900) +
-                "\n\nПриложение закроется на пару секунд. Библиотека, история и настройки сохранятся.",
+            message = "Приложение закроется на пару секунд. Библиотека, история и настройки сохранятся.",
+            notes = ready.release.notes.ifBlank { "Новая версия Кинотрека." },
             actions = listOf(DialogAction("Установить", Icons.ArrowUp, primary = true) { updater.install() }),
         ))
     }
@@ -160,7 +174,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun open(screen: Screen) {
         if (screen == current) return
         when (screen) {
-            is Screen.Torrent, is Screen.Release, Screen.Support -> stack.add(screen)
+            is Screen.Torrent, is Screen.Release, is Screen.Item, Screen.Support -> stack.add(screen)
             else -> {
                 stack.clear()
                 stack.add(Screen.Home)
@@ -228,14 +242,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .take(SHELF_SIZE)
     }
 
+    /** Opens the trailer in the YouTube app; [known] is a video id found on the release page. */
+    fun trailer(title: String, year: String?, known: String?) {
+        viewModelScope.launch {
+            val id = known ?: run {
+                toast("Ищу трейлер…")
+                Trailers.find(title, year)
+            }
+            send(UiEvent.OpenTrailer(id, Trailers.query(title, year)))
+        }
+    }
+
     // Library actions
 
-    fun play(item: LibraryItem) {
+    fun openItem(item: LibraryItem) = open(Screen.Item(item.url))
+
+    /**
+     * A torrent opens its file list ([resume]: straight into the file watched last); a link or a
+     * file plays at once, from where it stopped unless [fromStart].
+     */
+    fun play(item: LibraryItem, resume: Boolean = false, fromStart: Boolean = false) {
         if (item.kind == SourceKind.TORRENT) {
-            open(Screen.Torrent(TorrentRequest(item.title, magnet = item.url, poster = item.poster, page = item.page)))
+            open(Screen.Torrent(TorrentRequest(item.title, magnet = item.url, poster = item.poster, page = item.page, resume = resume)))
             return
         }
-        val progress = library.current.progress[item.url]?.takeUnless { it.finished }
+        val progress = library.current.progress[item.url]?.takeUnless { it.finished || fromStart }
         send(UiEvent.Play(PlaybackRequest(item.url, listOf(PlaybackEntry(item.title, item.url, item.url)), startPositionMs = progress?.positionMs ?: 0)))
     }
 
@@ -250,7 +281,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             title = item.title,
             message = item.kind.label,
             actions = listOfNotNull(
-                DialogAction("Смотреть", Icons.Play, primary = true) { play(item) },
+                DialogAction("Смотреть", Icons.Play, primary = true) { play(item, resume = true) },
+                DialogAction("Подробнее", Icons.Info) { openItem(item) },
                 DialogAction(if (item.favorite) "Убрать из избранного" else "В избранное", if (item.favorite) Icons.FavoriteBorder else Icons.Favorite) { toggleFavorite(item) },
                 if (hasProgress) DialogAction("Сбросить прогресс", Icons.History) { library.clearProgress(item.url); toast("Прогресс сброшен") } else null,
                 DialogAction("Переименовать", Icons.Edit) { rename(item) },
@@ -266,12 +298,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         confirmLabel = "Сохранить",
     ) { library.rename(item.url, it) })
 
-    private fun confirmDelete(item: LibraryItem) = showDialog(DialogSpec.Actions(
+    fun confirmDelete(item: LibraryItem, onDeleted: () -> Unit = {}) = showDialog(DialogSpec.Actions(
         title = "Удалить «${item.info.title}»?",
         message = "Видео исчезнет из библиотеки вместе с прогрессом просмотра.",
         actions = listOf(DialogAction("Удалить", Icons.Delete) {
             library.remove(item.url)
             toast("Удалено")
+            onDeleted()
         }),
     ))
 

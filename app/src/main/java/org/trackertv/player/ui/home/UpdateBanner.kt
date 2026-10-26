@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import org.trackertv.player.data.ReleaseNotes
 import org.trackertv.player.data.UpdateState
 import org.trackertv.player.ui.components.ProgressLine
 import org.trackertv.player.ui.components.TvButton
@@ -66,5 +67,4 @@ fun UpdateBanner(state: UpdateState, onDownload: () -> Unit, onInstall: () -> Un
     }
 }
 
-private fun firstLine(notes: String): String =
-    notes.lineSequence().map { it.trim().trimStart('#', '*', '-', ' ') }.firstOrNull { it.isNotEmpty() } ?: "Новая версия на GitHub"
+private fun firstLine(notes: String): String = ReleaseNotes.summary(notes) ?: "Новая версия на GitHub"

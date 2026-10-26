@@ -12,6 +12,8 @@ data class ReleaseDetails(
     val fields: List<Pair<String, String>>,
     val synopsis: String?,
     val screenshots: List<String>,
+    /** YouTube video id of a trailer linked or embedded on the page. */
+    val trailer: String? = null,
 ) {
     fun field(vararg names: String): String? = fields.firstOrNull { (label, _) -> names.any { label.equals(it, ignoreCase = true) } }?.second
     val genres: List<String> get() = field("Жанр")?.split(',', '/')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
@@ -35,14 +37,22 @@ data class ReleaseDetails(
         private val TAG = Regex("<[^>]+>")
         private val SPACES = Regex("[ \\t\\u00a0]+")
         private val FIELD_LINE = Regex("^([А-ЯЁA-Z][^:]{1,40}?)\\s*:\\s*(.*)$")
+        /** A thumbnail wrapped in a link to the full-size picture. */
+        private val LINKED_IMAGE = Regex(
+            "<a[^>]+href=[\"']([^\"']+\\.(?:jpe?g|png|webp))[\"'][^>]*>\\s*<(?:img[^>]+src|var[^>]+title)=[\"']([^\"']+)[\"']",
+            RegexOption.IGNORE_CASE,
+        )
+        private val YOUTUBE = Regex("(?:youtube(?:-nocookie)?\\.com/(?:watch\\?(?:[^\"'<>\\s]*?&(?:amp;)?)?v=|embed/|v/|shorts/)|youtu\\.be/)([A-Za-z0-9_-]{11})")
 
         /** Rutor: the first cell of table#details, up to the MediaInfo spoiler. */
         fun parseRutor(html: String, pageUrl: String): ReleaseDetails? {
             val start = html.indexOf("id=\"details\"").takeIf { it >= 0 } ?: return null
             // Skip the rest of the opening tag so its attributes are not read as text.
             var block = html.substring(html.indexOf('>', start) + 1)
+            // Trailers often sit in a spoiler below the description: look for them in the whole cell.
+            val cell = block.indexOf("</td></tr>").takeIf { it > 0 }?.let { block.substring(0, it) } ?: block
             listOf("<div class=\"hidewrap\"", "</td></tr>").map { block.indexOf(it) }.filter { it > 0 }.minOrNull()?.let { block = block.substring(0, it) }
-            return parseBlock(block, pageUrl, IMG)
+            return parseBlock(block, pageUrl, IMG, cell)
         }
 
         /** RuTracker: the first post of the topic. */
@@ -50,15 +60,19 @@ data class ReleaseDetails(
             val start = html.indexOf("class=\"post_body\"").takeIf { it >= 0 } ?: return null
             // Skip the rest of the opening tag so its attributes are not read as text.
             var block = html.substring(html.indexOf('>', start) + 1)
-            block.indexOf("class=\"sp-wrap\"").takeIf { it > 0 }?.let { block = block.substring(0, it) }
             block.indexOf("<!--/post_body-->").takeIf { it > 0 }?.let { block = block.substring(0, it) }
+            val post = block
+            block.indexOf("class=\"sp-wrap\"").takeIf { it > 0 }?.let { block = block.substring(0, it) }
             // RuTracker labels look like <span class="post-b">Жанр</span>: value
             block = block.replace(Regex("<span class=\"post-b\">([^<]+)</span>\\s*:?", RegexOption.IGNORE_CASE), "<b>$1:</b>")
-            return parseBlock(block, pageUrl, RUTRACKER_IMG)
+            return parseBlock(block, pageUrl, RUTRACKER_IMG, post)
         }
 
-        private fun parseBlock(block: String, pageUrl: String, images: Regex): ReleaseDetails {
+        /** [wide] is the whole post, searched for a trailer and for full-size pictures. */
+        private fun parseBlock(block: String, pageUrl: String, images: Regex, wide: String = block): ReleaseDetails {
+            val fullSize = LINKED_IMAGE.findAll(wide).associate { it.groupValues[2] to it.groupValues[1] }
             val pictures = images.findAll(block).map { it.groupValues[1] }.filterNot { NOT_POSTER.containsMatchIn(it) }
+                .map { fullSize[it] ?: it }
                 .mapNotNull { absolute(pageUrl, it) }.distinct().toList()
             // The cover comes first; later pictures are screenshots (often thumbnails linked to full size).
             val poster = pictures.firstOrNull()
@@ -91,7 +105,7 @@ data class ReleaseDetails(
                 if (!collectingStory && story.isNotEmpty() && synopsis == null) synopsis = story.toString()
             }
             if (synopsis == null && story.isNotEmpty()) synopsis = story.toString()
-            return ReleaseDetails(poster, fields.distinctBy { it.first + it.second }, synopsis?.take(2_000), thumbnails)
+            return ReleaseDetails(poster, fields.distinctBy { it.first + it.second }, synopsis?.take(2_000), thumbnails, YOUTUBE.find(wide)?.groupValues?.get(1))
         }
 
         private fun absolute(base: String, path: String): String? = runCatching {

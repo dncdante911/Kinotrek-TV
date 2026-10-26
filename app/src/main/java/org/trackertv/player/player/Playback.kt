@@ -15,6 +15,11 @@ data class PlaybackRequest(
     val startPositionMs: Long = 0,
     /** Streams come from TorrServer, so the engine must stay alive while playing. */
     val torrent: Boolean = false,
+    /** A TV channel: no position to remember. */
+    val live: Boolean = false,
+    /** Some channels only answer a browser-like User-Agent or a Referer. */
+    val userAgent: String? = null,
+    val referer: String? = null,
 ) {
     fun start(context: Context) = context.startActivity(toIntent(context))
 
@@ -26,6 +31,9 @@ data class PlaybackRequest(
         .putExtra(EXTRA_INDEX, startIndex)
         .putExtra(EXTRA_POSITION, startPositionMs)
         .putExtra(EXTRA_TORRENT, torrent)
+        .putExtra(EXTRA_LIVE, live)
+        .putExtra(EXTRA_USER_AGENT, userAgent)
+        .putExtra(EXTRA_REFERER, referer)
 
     companion object {
         private const val EXTRA_ITEM = "item"
@@ -35,6 +43,9 @@ data class PlaybackRequest(
         private const val EXTRA_INDEX = "index"
         private const val EXTRA_POSITION = "position"
         private const val EXTRA_TORRENT = "torrent"
+        private const val EXTRA_LIVE = "live"
+        private const val EXTRA_USER_AGENT = "userAgent"
+        private const val EXTRA_REFERER = "referer"
 
         fun from(intent: Intent): PlaybackRequest? {
             val titles = intent.getStringArrayListExtra(EXTRA_TITLES) ?: return null
@@ -47,6 +58,9 @@ data class PlaybackRequest(
                 startIndex = intent.getIntExtra(EXTRA_INDEX, 0).coerceIn(0, urls.lastIndex),
                 startPositionMs = intent.getLongExtra(EXTRA_POSITION, 0),
                 torrent = intent.getBooleanExtra(EXTRA_TORRENT, false),
+                live = intent.getBooleanExtra(EXTRA_LIVE, false),
+                userAgent = intent.getStringExtra(EXTRA_USER_AGENT),
+                referer = intent.getStringExtra(EXTRA_REFERER),
             )
         }
     }
