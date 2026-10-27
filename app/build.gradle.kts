@@ -16,8 +16,8 @@ android {
         applicationId = "org.trackertv.player"
         minSdk = 28
         targetSdk = 36
-        versionCode = 17
-        versionName = "2.0.0"
+        versionCode = 18
+        versionName = "2.0.5"
     }
 
     signingConfigs {
@@ -70,6 +70,8 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-dash:$media3")
     implementation("androidx.media3:media3-ui:$media3")
     implementation("androidx.media3:media3-session:$media3")
+    // Base classes of the bundled FFmpeg audio decoder (androidx.media3.decoder.ffmpeg, decoder/build.sh)
+    implementation("androidx.media3:media3-decoder:$media3")
     // QR codes on the support screen
     implementation("com.google.zxing:core:3.5.4")
     testImplementation("junit:junit:4.13.2")

@@ -12,12 +12,18 @@
 | [anacrolix/torrent](https://github.com/anacrolix/torrent) — в составе TorrServer | Matt Joiner и участники | Mozilla Public License 2.0 |
 | [Jetpack Compose, Compose for TV, AndroidX](https://developer.android.com/jetpack) | Google / The Android Open Source Project | Apache License 2.0 |
 | [AndroidX Media3 (ExoPlayer)](https://github.com/androidx/media) | Google / The Android Open Source Project | Apache License 2.0 |
+| [FFmpeg](https://ffmpeg.org) — декодер звука Dolby Digital / Digital Plus, DTS, TrueHD (`libffmpegJNI.so`, отдельная динамическая библиотека) | FFmpeg developers | GNU LGPL v2.1 или новее |
+| [Media3 decoder_ffmpeg](https://github.com/androidx/media/tree/main/libraries/decoder_ffmpeg) — обвязка FFmpeg (`decoder/jni`, `androidx.media3.decoder.ffmpeg`) | Google / The Android Open Source Project | Apache License 2.0 |
 | [Kotlin, kotlinx.coroutines](https://github.com/JetBrains/kotlin) | JetBrains | Apache License 2.0 |
 | [ZXing](https://github.com/zxing/zxing) — QR-коды | ZXing authors | Apache License 2.0 |
 
 Исходный код TorrServer с изменениями, внесёнными для Кинотрека (`engine/runner`, `engine/overlay`,
 `engine/build.sh`), открыт в этом репозитории на условиях GPL-3.0. Исходный код самого TorrServer доступен в
 [репозитории автора](https://github.com/YouROK/TorrServer); версия указана в `engine/build.sh`.
+
+FFmpeg собирается без `--enable-gpl` и `--enable-nonfree`, только с аудиодекодерами, скриптом
+[`decoder/build.sh`](decoder/build.sh); в нём указана ветка исходников FFmpeg и все параметры сборки, так что
+`libffmpegJNI.so` можно пересобрать и заменить в APK.
 
 ## Используются по сети
 

@@ -17,3 +17,4 @@ engine/.upstream/
 
 # Encryption key of the closed sources (tools/kinocrypt.sh); never commit it.
 .kinotrek/
+decoder/.upstream/
