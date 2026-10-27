@@ -36,6 +36,12 @@
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config">
 
+        <!-- Tablets: the screens are laid out for landscape, like a TV. Android 16 ignores the
+             orientation on large screens unless the app asks to keep it. A TV ignores both. -->
+        <property
+            android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
+            android:value="true" />
+
         <service
             android:name=".torrent.LocalTorrentService"
             android:exported="false"
@@ -48,6 +54,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:screenOrientation="sensorLandscape"
             android:launchMode="singleTask"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|uiMode">
             <intent-filter>
@@ -76,12 +83,14 @@
         <activity
             android:name=".PlayerActivity"
             android:exported="false"
+            android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.TrackerTV"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|uiMode" />
 
         <activity
             android:name=".web.YouTubeActivity"
             android:exported="false"
+            android:screenOrientation="sensorLandscape"
             android:hardwareAccelerated="true"
             android:theme="@style/Theme.TrackerTV"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|uiMode" />
