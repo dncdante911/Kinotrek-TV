@@ -16,14 +16,14 @@ android {
         applicationId = "org.trackertv.player"
         minSdk = 28
         targetSdk = 36
-        versionCode = 18
-        versionName = "2.0.5"
+        versionCode = 19
+        versionName = "2.0.6"
     }
 
     signingConfigs {
         create("releaseKey") {
             if (signingFile.exists()) {
-                storeFile = rootProject.file(signing.getProperty("storeFile"))
+                storeFile = rootProject.file(signing.getProperty("storeFile")
                 storePassword = signing.getProperty("storePassword")
                 keyAlias = signing.getProperty("keyAlias")
                 keyPassword = signing.getProperty("keyPassword")
