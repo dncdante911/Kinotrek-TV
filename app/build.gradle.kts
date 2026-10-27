@@ -23,7 +23,7 @@ android {
     signingConfigs {
         create("releaseKey") {
             if (signingFile.exists()) {
-                storeFile = rootProject.file(signing.getProperty("storeFile")
+                storeFile = rootProject.file(signing.getProperty("storeFile"))
                 storePassword = signing.getProperty("storePassword")
                 keyAlias = signing.getProperty("keyAlias")
                 keyPassword = signing.getProperty("keyPassword")
