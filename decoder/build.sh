@@ -11,7 +11,8 @@
 set -euo pipefail
 
 BRANCH="${1:-release/9.0}"
-API=28
+# Android 7.0, the oldest the app supports.
+API=24
 DECODERS=(ac3 eac3 dca truehd mlp)
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
@@ -36,7 +37,8 @@ OPTIONS=(
   --target-os=android --enable-cross-compile --enable-static --disable-shared --enable-pic
   --disable-autodetect --disable-doc --disable-programs --disable-everything
   --disable-avdevice --disable-avformat --disable-swscale --disable-avfilter --disable-network
-  --enable-swresample --disable-symver --disable-vulkan
+  # iconv (subtitle charsets, unused for audio) is in Android's libc only from 9.0.
+  --enable-swresample --disable-symver --disable-vulkan --disable-iconv
 )
 for decoder in "${DECODERS[@]}"; do OPTIONS+=("--enable-decoder=$decoder"); done
 

@@ -14,7 +14,8 @@ android {
 
     defaultConfig {
         applicationId = "org.trackertv.player"
-        minSdk = 28
+        // Android 7.0: 2015–2016 Android TVs (Sony, Philips) never got a newer version.
+        minSdk = 24
         targetSdk = 36
         versionCode = 20
         versionName = "2.1.0"
@@ -42,6 +43,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // java.time (season dates) is built into Android only from 8.0.
+        isCoreLibraryDesugaringEnabled = true
     }
     testOptions { unitTests { isIncludeAndroidResources = true } }
     // libtorrserver.so is ~25 MB per ABI: compressed, the APK (and every self-update) is far smaller,
@@ -72,6 +75,7 @@ dependencies {
     implementation("androidx.media3:media3-session:$media3")
     // Base classes of the bundled FFmpeg audio decoder (androidx.media3.decoder.ffmpeg, decoder/build.sh)
     implementation("androidx.media3:media3-decoder:$media3")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     // QR codes on the support screen
     implementation("com.google.zxing:core:3.5.4")
     testImplementation("junit:junit:4.13.2")
