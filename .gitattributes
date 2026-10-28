@@ -5,3 +5,5 @@ app/src/test/** filter=kinocrypt diff=kinocrypt -text
 
 # Scripts run in bash on every OS.
 *.sh text eol=lf
+# Runs on Linux: keep LF even in a Windows checkout
+relay/** text eol=lf
