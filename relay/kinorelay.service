@@ -1,0 +1,27 @@
+[Unit]
+Description=Kinotrek relay (tracker pages for viewers behind blocking providers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kinorelay
+Group=kinorelay
+EnvironmentFile=/etc/kinorelay/env
+ExecStart=/usr/bin/python3 /opt/kinorelay/relay.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=256M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
