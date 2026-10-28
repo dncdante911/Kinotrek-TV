@@ -7,6 +7,9 @@
             <!-- Let's Encrypt's root, missing on Android 7.0 TVs (it arrived in 7.1.1): without it
                  sites and playlists on Let's Encrypt certificates fail there. Valid until 2035. -->
             <certificates src="@raw/isrg_root_x1" />
+            <!-- Google Trust Services R1–R4 (rutracker, rutor.org and other Cloudflare sites) and
+                 ISRG Root X2 (newer Let's Encrypt chains): an old TV's store has none of them. -->
+            <certificates src="@raw/extra_roots" />
         </trust-anchors>
     </base-config>
 </network-security-config>
