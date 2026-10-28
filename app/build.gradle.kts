@@ -29,6 +29,10 @@ android {
                 keyAlias = signing.getProperty("keyAlias")
                 keyPassword = signing.getProperty("keyPassword")
             }
+            // With minSdk 24 AGP signs v2 only. Installers and file managers on 2015–2016 TVs
+            // check the old JAR signature and reject such an APK with "error parsing the package".
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
