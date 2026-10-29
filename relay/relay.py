@@ -6,11 +6,20 @@ redirects followed (the app follows them itself, through the relay again). The a
 site's own status, Content-Type, Location and body. Errors of the relay itself are 4xx/502 with
 an X-Relay-Error header, so the app can tell them from the site's answers.
 
+With the request header X-Relay-Chunk: <bytes> the answer is split instead: Russian DPI freezes a
+connection to an unknown foreign address once some 16 KB have passed through it, so the body is
+gzipped and served in parts small enough for one connection each. /r then answers 200 with the
+site's status, Content-Type and Location in X-Relay-Status/-Type/-Location, the part count in
+X-Relay-Parts, a token in X-Relay-Id and the first part as the body; GET /p?id=<token>&n=<i>
+returns part i. The parts stay in memory for PARTS_TTL seconds.
+
 No dependencies beyond the standard library. Settings come from the environment:
 RELAY_BIND (host:port), RELAY_CERT, RELAY_KEY_FILE (TLS), RELAY_SECRET (shared app key).
 """
+import gzip
 import hmac
 import os
+import secrets
 import socket
 import ssl
 import sys
@@ -27,6 +36,8 @@ UPSTREAM_TIMEOUT = 12
 # Per viewer address: a home screen loads ~10 pages, a search ~20.
 RATE_PER_MINUTE = 120
 FORWARDED = ("User-Agent", "Accept-Language", "Cookie")
+CHUNK_MIN, CHUNK_MAX = 2_000, 64_000
+PARTS_TTL = 120
 
 SECRET = os.environ["RELAY_SECRET"].encode()
 
@@ -62,6 +73,33 @@ class RateLimit:
 limits = RateLimit(RATE_PER_MINUTE)
 
 
+class Parts:
+    """Split answers waiting for the app to fetch their remaining parts."""
+
+    def __init__(self, ttl):
+        self.ttl = ttl
+        self.items = {}
+        self.lock = threading.Lock()
+
+    def put(self, parts):
+        token = secrets.token_urlsafe(12)
+        now = time.monotonic()
+        with self.lock:
+            self.items = {k: v for k, v in self.items.items() if now - v[0] < self.ttl}
+            self.items[token] = (now, parts)
+        return token
+
+    def get(self, token, n):
+        with self.lock:
+            item = self.items.get(token)
+        if not item or time.monotonic() - item[0] >= self.ttl or not 0 <= n < len(item[1]):
+            return None
+        return item[1][n]
+
+
+pending = Parts(PARTS_TTL)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "kinorelay"
     sys_version = ""
@@ -80,6 +118,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_part(self, body, meta=()):
+        """One connection per part: closing it keeps every connection under the DPI's limit."""
+        self.close_connection = True
+        self.send_response(200)
+        for name, value in meta:
+            self.send_header(name, value)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
         if url.path == "/health":
@@ -89,13 +140,20 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path != "/r":
+        if url.path not in ("/r", "/p"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
+        query = urllib.parse.parse_qs(url.query)
+        if url.path == "/p":
+            try:
+                part = pending.get(query.get("id", [""])[0], int(query.get("n", ["-1"])[0]))
+            except ValueError:
+                part = None
+            return self.send_part(part) if part is not None else self.fail(404, "part expired")
         if not limits.allow(self.client_address[0]):
             return self.fail(429, "too many requests")
-        target = urllib.parse.parse_qs(url.query).get("u", [""])[0]
+        target = query.get("u", [""])[0]
         parts = urllib.parse.urlsplit(target)
         if parts.scheme != "https" or (parts.hostname or "").lower() not in ALLOWED_HOSTS or parts.port not in (None, 443):
             return self.fail(400, "host not allowed")
@@ -119,7 +177,25 @@ class Handler(BaseHTTPRequestHandler):
         if len(body) > MAX_BYTES:
             return self.fail(502, "page too large")
 
-        self.send_response(response.status if hasattr(response, "status") else response.code)
+        status = response.status if hasattr(response, "status") else response.code
+        try:
+            chunk = int(self.headers.get("X-Relay-Chunk", "0"))
+        except ValueError:
+            chunk = 0
+        if chunk:
+            chunk = min(max(chunk, CHUNK_MIN), CHUNK_MAX)
+            packed = gzip.compress(body, 6)
+            pieces = [packed[i:i + chunk] for i in range(0, len(packed), chunk)] or [b""]
+            meta = [("X-Relay-Status", str(status)), ("X-Relay-Parts", str(len(pieces)))]
+            if len(pieces) > 1:
+                meta.append(("X-Relay-Id", pending.put(pieces)))
+            for name in ("Type", "Location"):
+                value = response.headers.get("Content-Type" if name == "Type" else name)
+                if value:
+                    meta.append(("X-Relay-" + name, value))
+            return self.send_part(pieces[0], meta)
+
+        self.send_response(status)
         for name in ("Content-Type", "Location"):
             value = response.headers.get(name)
             if value:
