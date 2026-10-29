@@ -10,6 +10,7 @@
 |---|---|---|
 | [TorrServer MatriX](https://github.com/YouROK/TorrServer) — торрент-движок (каталог `engine/`, отдельный процесс) | YouROK и участники | GNU GPL v3.0 — [engine/LICENSE](engine/LICENSE) |
 | [anacrolix/torrent](https://github.com/anacrolix/torrent) — в составе TorrServer | Matt Joiner и участники | Mozilla Public License 2.0 |
+| [Xray-core](https://github.com/XTLS/Xray-core) — туннель к ретранслятору Кинотрека, VLESS + REALITY (каталог `tunnel/`, отдельный процесс `libkinotunnel.so`) | RPRX и участники проекта XTLS | Mozilla Public License 2.0 |
 | [Jetpack Compose, Compose for TV, AndroidX](https://developer.android.com/jetpack) | Google / The Android Open Source Project | Apache License 2.0 |
 | [AndroidX Media3 (ExoPlayer)](https://github.com/androidx/media) | Google / The Android Open Source Project | Apache License 2.0 |
 | [FFmpeg](https://ffmpeg.org) — декодер звука Dolby Digital / Digital Plus, DTS, TrueHD (`libffmpegJNI.so`, отдельная динамическая библиотека) | FFmpeg developers | GNU LGPL v2.1 или новее |
@@ -20,6 +21,9 @@
 Исходный код TorrServer с изменениями, внесёнными для Кинотрека (`engine/runner`, `engine/overlay`,
 `engine/build.sh`), открыт в этом репозитории на условиях GPL-3.0. Исходный код самого TorrServer доступен в
 [репозитории автора](https://github.com/YouROK/TorrServer); версия указана в `engine/build.sh`.
+
+Туннель собирается из Xray-core без изменений скриптом [`tunnel/build.sh`](tunnel/build.sh); программа-обвязка
+[`tunnel/main.go`](tunnel/main.go) открыта, версия Xray-core указана в `tunnel/go.mod`.
 
 FFmpeg собирается без `--enable-gpl` и `--enable-nonfree`, только с аудиодекодерами, скриптом
 [`decoder/build.sh`](decoder/build.sh); в нём указана ветка исходников FFmpeg и все параметры сборки, так что
