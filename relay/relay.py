@@ -13,11 +13,18 @@ site's status, Content-Type and Location in X-Relay-Status/-Type/-Location, the 
 X-Relay-Parts, a token in X-Relay-Id and the first part as the body; GET /p?id=<token>&n=<i>
 returns part i. The parts stay in memory for PARTS_TTL seconds.
 
-No dependencies beyond the standard library. Settings come from the environment:
-RELAY_BIND (host:port), RELAY_CERT, RELAY_KEY_FILE (TLS), RELAY_SECRET (shared app key).
+GET /i?u=<image url>&w=<width> fetches a poster for a release card: only from the image hosts the
+trackers use (IMAGE_HOSTS), only images, and never to an address that is not public. With Pillow
+installed it is scaled down to the card's width first (a 150 KB poster becomes ~20 KB). The answer
+is always split, as /r with X-Relay-Chunk.
+
+Needs only the standard library; Pillow (python3-pil) is optional. Settings come from the
+environment: RELAY_BIND (host:port), RELAY_CERT, RELAY_KEY_FILE (TLS), RELAY_SECRET (shared app key).
 """
 import gzip
 import hmac
+import io
+import ipaddress
 import os
 import secrets
 import socket
@@ -38,8 +45,20 @@ RATE_PER_MINUTE = 120
 FORWARDED = ("User-Agent", "Accept-Language", "Cookie")
 CHUNK_MIN, CHUNK_MAX = 2_000, 64_000
 PARTS_TTL = 120
+# Posters on release pages; a host and its subdomains (i128.fastpic.org).
+IMAGE_HOSTS = ("fastpic.org", "fastpic.ru", "lostpix.com", "imageban.ru", "ibb.co", "imgur.com",
+               "radikal.ru", "pixhost.to", "imgbox.com", "postimg.cc", "geekpic.net", "youpic.su")
+IMAGE_MAX_BYTES = 8_000_000
+IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 480, 360
+# A screen of cards asks for a poster each.
+IMAGE_RATE_PER_MINUTE = 240
 
 SECRET = os.environ["RELAY_SECRET"].encode()
+
+try:
+    from PIL import Image, ImageOps
+except ImportError:
+    Image = None
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -71,6 +90,42 @@ class RateLimit:
 
 
 limits = RateLimit(RATE_PER_MINUTE)
+image_limits = RateLimit(IMAGE_RATE_PER_MINUTE)
+
+
+def requote(url):
+    """Links taken from pages may carry raw « or ß; urllib sends ASCII only."""
+    return urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
+
+
+def image_host_allowed(host):
+    host = (host or "").lower()
+    return any(host == h or host.endswith("." + h) for h in IMAGE_HOSTS)
+
+
+def public_address(host):
+    """True when every address the name resolves to is public: no way to this host's own network."""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    return bool(infos) and all(ipaddress.ip_address(info[4][0]).is_global for info in infos)
+
+
+def shrink(body, width):
+    """The image as a JPEG at most [width] wide; as it is when Pillow is missing or cannot read it."""
+    if Image is None:
+        return body, None
+    try:
+        with Image.open(io.BytesIO(body)) as picture:
+            picture = ImageOps.exif_transpose(picture).convert("RGB")
+            if picture.width > width:
+                picture.thumbnail((width, width * 3))
+            out = io.BytesIO()
+            picture.save(out, "JPEG", quality=80, optimize=True, progressive=True)
+            return out.getvalue(), "image/jpeg"
+    except Exception:
+        return body, None
 
 
 class Parts:
@@ -140,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p"):
+        if url.path not in ("/r", "/p", "/i"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
@@ -151,6 +206,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 part = None
             return self.send_part(part) if part is not None else self.fail(404, "part expired")
+        if url.path == "/i":
+            return self.image(query)
         if not limits.allow(self.client_address[0]):
             return self.fail(429, "too many requests")
         target = query.get("u", [""])[0]
@@ -161,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         headers = {name: self.headers[name] for name in FORWARDED if self.headers.get(name)}
         if parts.hostname.lower() != "rutracker.org":
             headers.pop("Cookie", None)
-        request = urllib.request.Request(target, headers=headers, method="GET")
+        request = urllib.request.Request(requote(target), headers=headers, method="GET")
         try:
             response = opener.open(request, timeout=UPSTREAM_TIMEOUT)
         except urllib.error.HTTPError as e:
@@ -183,17 +240,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             chunk = 0
         if chunk:
-            chunk = min(max(chunk, CHUNK_MIN), CHUNK_MAX)
-            packed = gzip.compress(body, 6)
-            pieces = [packed[i:i + chunk] for i in range(0, len(packed), chunk)] or [b""]
-            meta = [("X-Relay-Status", str(status)), ("X-Relay-Parts", str(len(pieces)))]
-            if len(pieces) > 1:
-                meta.append(("X-Relay-Id", pending.put(pieces)))
-            for name in ("Type", "Location"):
-                value = response.headers.get("Content-Type" if name == "Type" else name)
-                if value:
-                    meta.append(("X-Relay-" + name, value))
-            return self.send_part(pieces[0], meta)
+            return self.send_split(body, chunk, status, response.headers.get("Content-Type"), response.headers.get("Location"))
 
         self.send_response(status)
         for name in ("Content-Type", "Location"):
@@ -204,6 +251,64 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def send_split(self, body, chunk, status, content_type, location=None):
+        """Gzipped and in parts of [chunk] bytes; the first part answers, the rest wait in [pending]."""
+        chunk = min(max(chunk, CHUNK_MIN), CHUNK_MAX)
+        packed = gzip.compress(body, 6)
+        pieces = [packed[i:i + chunk] for i in range(0, len(packed), chunk)] or [b""]
+        meta = [("X-Relay-Status", str(status)), ("X-Relay-Parts", str(len(pieces)))]
+        if len(pieces) > 1:
+            meta.append(("X-Relay-Id", pending.put(pieces)))
+        if content_type:
+            meta.append(("X-Relay-Type", content_type))
+        if location:
+            meta.append(("X-Relay-Location", location))
+        return self.send_part(pieces[0], meta)
+
+    def image(self, query):
+        """A poster from an image host, scaled to the card; redirects are followed here, each checked."""
+        if not image_limits.allow(self.client_address[0]):
+            return self.fail(429, "too many requests")
+        try:
+            chunk = int(self.headers.get("X-Relay-Chunk", "0")) or 8_000
+            width = min(max(int(query.get("w", [IMAGE_WIDTH])[0]), IMAGE_WIDTH_MIN), IMAGE_WIDTH_MAX)
+        except ValueError:
+            return self.fail(400, "bad request")
+        target = requote(query.get("u", [""])[0])
+        for _ in range(4):
+            parts = urllib.parse.urlsplit(target)
+            if parts.scheme not in ("http", "https") or parts.port not in (None, 80, 443) \
+                    or not image_host_allowed(parts.hostname) or not public_address(parts.hostname):
+                return self.fail(400, "host not allowed")
+            request = urllib.request.Request(target, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+            try:
+                response = opener.open(request, timeout=UPSTREAM_TIMEOUT)
+            except urllib.error.HTTPError as e:
+                response = e
+            except (urllib.error.URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError, ValueError) as e:
+                return self.fail(502, f"site unreachable: {type(getattr(e, 'reason', e)).__name__}")
+            status = response.status if hasattr(response, "status") else response.code
+            if status in (301, 302, 303, 307, 308) and response.headers.get("Location"):
+                target = requote(urllib.parse.urljoin(target, response.headers["Location"]))
+                response.close()
+                continue
+            break
+        else:
+            return self.fail(502, "too many redirects")
+        content_type = response.headers.get("Content-Type") or ""
+        try:
+            body = response.read(IMAGE_MAX_BYTES + 1)
+        except (socket.timeout, TimeoutError, OSError):
+            return self.fail(502, "site timed out")
+        finally:
+            response.close()
+        if status != 200 or not content_type.startswith("image/"):
+            return self.fail(502, f"not an image ({status})")
+        if len(body) > IMAGE_MAX_BYTES:
+            return self.fail(502, "image too large")
+        body, shrunk_type = shrink(body, width)
+        return self.send_split(body, chunk, 200, shrunk_type or content_type)
 
 
 class Server(ThreadingHTTPServer):

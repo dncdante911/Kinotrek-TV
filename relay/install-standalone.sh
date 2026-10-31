@@ -17,7 +17,7 @@ CAMOUFLAGE="${CAMOUFLAGE:-www.samsung.com}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq haproxy python3 curl openssl >/dev/null
+apt-get install -y -qq haproxy python3 python3-pil curl openssl >/dev/null
 
 RELAY_IPS="$PUBLIC_IP" RELAY_BIND=127.0.0.1:8445 RELAY_SECRET="$RELAY_SECRET" ./install.sh
 BIND=127.0.0.1:8444 RELAY=127.0.0.1:8445 CAMOUFLAGE="$CAMOUFLAGE" ./install-tunnel.sh
