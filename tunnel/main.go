@@ -10,8 +10,9 @@
 // JSON: Xray's JSON loader pulls in every protocol and would make the program ten times larger.
 //
 //	libkinotunnel.so -id <uuid> -key <public key> -short <short id> -sni <camouflage site> \
-//	    -server 46.232.232.38:8443 -server 195.22.131.11:8443
+//	    -server 46.232.232.38:8443 -server 195.22.131.11:8443 -server 158.179.206.162:8443@<its own key>
 //
+// -key is the default; a server set up with keys of its own names its key after an "@".
 // Each server gets its own SOCKS5 port on 127.0.0.1. The first line on stdout is
 // "READY <port> <port>…" in the order of -server, or "ERROR <message>".
 // When stdin closes (the app's process is gone) the tunnel stops.
@@ -95,6 +96,15 @@ func start(id, key, short, sni string, targets []string) ([]string, error) {
 
 	var ports []string
 	for _, target := range targets {
+		// A server with keys of its own names its public key after an "@".
+		serverKey := publicKey
+		if address, own, found := strings.Cut(target, "@"); found {
+			serverKey, err = base64.RawURLEncoding.DecodeString(own)
+			if err != nil || len(serverKey) != 32 {
+				return nil, fmt.Errorf("bad key for -server %s", address)
+			}
+			target = address
+		}
 		host, portText, err := gonet.SplitHostPort(target)
 		if err != nil {
 			return nil, fmt.Errorf("bad -server %s: %v", target, err)
@@ -107,7 +117,7 @@ func start(id, key, short, sni string, targets []string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		instance, err := core.New(config(local, host, uint32(port), id, publicKey, shortID, sni))
+		instance, err := core.New(config(local, host, uint32(port), id, serverKey, shortID, sni))
 		if err != nil {
 			return nil, err
 		}

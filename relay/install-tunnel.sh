@@ -8,13 +8,14 @@
 # name the camouflage site; the relay's own ones carry no name.
 #
 # Keeps an existing config: the app has its public key, id and short id built in.
+# Defaults fit the radio VPS; another host overrides BIND and RELAY, and ID / SHORT_ID to share the app's.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION=v26.10.29
-CAMOUFLAGE=www.samsung.com
-BIND=192.168.0.246:8444
-RELAY=192.168.0.246:8443
+VERSION="${VERSION:-v26.10.29}"
+CAMOUFLAGE="${CAMOUFLAGE:-www.samsung.com}"
+BIND="${BIND:-192.168.0.246:8444}"
+RELAY="${RELAY:-192.168.0.246:8443}"
 
 id kinotunnel >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin kinotunnel
 install -d -m 755 /opt/kinotunnel
@@ -35,7 +36,7 @@ install -d -m 750 -g kinotunnel /etc/kinotunnel
 if [ ! -f /etc/kinotunnel/config.json ]; then
     keys=$(/opt/kinotunnel/xray x25519)
     private=$(echo "$keys" | awk -F': ' '/^PrivateKey/{print $2}')
-    python3 - "$BIND" "$RELAY" "$CAMOUFLAGE" "$private" "$(/opt/kinotunnel/xray uuid)" "$(openssl rand -hex 8)" > /etc/kinotunnel/config.json <<'EOF'
+    python3 - "$BIND" "$RELAY" "$CAMOUFLAGE" "$private" "${ID:-$(/opt/kinotunnel/xray uuid)}" "${SHORT_ID:-$(openssl rand -hex 8)}" > /etc/kinotunnel/config.json <<'EOF'
 import json, sys
 bind, relay, camouflage, private, uuid, short = sys.argv[1:]
 host, port = bind.rsplit(":", 1)
