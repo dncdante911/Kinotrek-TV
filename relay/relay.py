@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ALLOWED_HOSTS = {"rutor.info", "rutor.org.in", "rutor.org", "rutracker.org"}
+ALLOWED_HOSTS = {"rutor.info", "rutor.org.in", "rutor.org", "rutracker.org", "nnmclub.to", "megapeer.vip"}
 MAX_BYTES = 4_000_000
 UPSTREAM_TIMEOUT = 12
 # Per viewer address: a home screen loads ~10 pages, a search ~20.
@@ -47,7 +47,8 @@ CHUNK_MIN, CHUNK_MAX = 2_000, 64_000
 PARTS_TTL = 120
 # Posters on release pages; a host and its subdomains (i128.fastpic.org).
 IMAGE_HOSTS = ("fastpic.org", "fastpic.ru", "lostpix.com", "imageban.ru", "ibb.co", "imgur.com",
-               "radikal.ru", "pixhost.to", "imgbox.com", "postimg.cc", "geekpic.net", "youpic.su")
+               "radikal.ru", "pixhost.to", "imgbox.com", "postimg.cc", "geekpic.net", "youpic.su",
+               "hostingkartinok.com", "nnmstatic.win")
 IMAGE_MAX_BYTES = 8_000_000
 IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 480, 360
 # A screen of cards asks for a poster each.
