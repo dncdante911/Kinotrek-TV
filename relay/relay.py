@@ -18,6 +18,14 @@ trackers use (IMAGE_HOSTS), only images, and never to an address that is not pub
 installed it is scaled down to the card's width first (a 150 KB poster becomes ~20 KB). The answer
 is always split, as /r with X-Relay-Chunk.
 
+Streams carry the app's built-in browser to RuTracker where the provider blocks it: a TCP stream to
+port 443 of STREAM_HOSTS only, its TLS end to end between the TV and the site (the relay sees only
+encrypted bytes). As with pages, each piece travels on a short connection of its own:
+POST /s/open?h=<host> answers the stream's id; POST /s/w?id=&seq=<n> writes the body (pieces in
+seq order); GET /s/r?id=&off=<offset>&size=<bytes>&ack=<offset> answers the bytes from off on,
+waiting up to STREAM_WAIT s for some, with X-Relay-Eof: 1 once the site has closed and all is read
+(ack: everything before it has arrived and may be dropped); POST /s/c?id= closes it.
+
 Needs only the standard library; Pillow (python3-pil) is optional. Settings come from the
 environment: RELAY_BIND (host:port), RELAY_CERT, RELAY_KEY_FILE (TLS), RELAY_SECRET (shared app key).
 """
@@ -53,6 +61,18 @@ IMAGE_MAX_BYTES = 8_000_000
 IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 480, 360
 # A screen of cards asks for a poster each.
 IMAGE_RATE_PER_MINUTE = 240
+
+# Streams: RuTracker, its static files and Cloudflare's check (and names under them), for the browser; nothing else.
+STREAM_HOSTS = {"rutracker.org", "static.rutracker.cc", "challenges.cloudflare.com"}
+STREAM_PIECE_MAX = 16_000
+STREAM_WAIT = 8
+# A read returns once data has stopped arriving for this long, not only when [size] is full.
+STREAM_SETTLE = 0.12
+STREAM_IDLE = 90
+STREAM_BUFFER = 1_000_000
+STREAMS_PER_VIEWER = 48
+STREAMS_MAX = 600
+STREAM_OPENS_PER_MINUTE = 300
 
 SECRET = os.environ["RELAY_SECRET"].encode()
 
@@ -92,6 +112,7 @@ class RateLimit:
 
 limits = RateLimit(RATE_PER_MINUTE)
 image_limits = RateLimit(IMAGE_RATE_PER_MINUTE)
+stream_limits = RateLimit(STREAM_OPENS_PER_MINUTE)
 
 
 def requote(url):
@@ -156,6 +177,166 @@ class Parts:
 pending = Parts(PARTS_TTL)
 
 
+def stream_host_allowed(host):
+    """One of STREAM_HOSTS or a name under one (Cloudflare's check runs on brunhild.challenges.cloudflare.com)."""
+    return any(host == h or host.endswith("." + h) for h in STREAM_HOSTS)
+
+
+def stream_address(host):
+    """A public IPv4 address of [host], or None: a stream never leads into a private network."""
+    try:
+        infos = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return None
+    addresses = [info[4][0] for info in infos]
+    if not addresses or not all(ipaddress.ip_address(a).is_global for a in addresses):
+        return None
+    return addresses[0]
+
+
+class Stream:
+    """One TCP stream to a site; what the site sends waits in [buffer] until the app has read it."""
+
+    def __init__(self, sock, viewer):
+        self.sock = sock
+        self.viewer = viewer
+        self.buffer = bytearray()
+        self.base = 0  # stream offset of buffer[0]
+        self.eof = False
+        self.closed = False
+        self.used = time.monotonic()
+        self.ready = threading.Condition()
+        self.write_lock = threading.Lock()
+        self.next_seq = 0
+        self.early = {}  # pieces that arrived before the ones they follow
+        threading.Thread(target=self.pump, daemon=True).start()
+
+    def pump(self):
+        try:
+            while True:
+                with self.ready:
+                    while len(self.buffer) >= STREAM_BUFFER and not self.closed:
+                        self.ready.wait(1)
+                    if self.closed:
+                        break
+                try:
+                    data = self.sock.recv(65536)
+                except socket.timeout:
+                    continue
+                if not data:
+                    break
+                with self.ready:
+                    self.buffer += data
+                    self.ready.notify_all()
+        except OSError:
+            pass
+        with self.ready:
+            self.eof = True
+            self.ready.notify_all()
+
+    def write(self, seq, data):
+        with self.write_lock:
+            self.used = time.monotonic()
+            if seq < self.next_seq:
+                return  # a retried piece that already went through
+            if seq > self.next_seq:
+                if len(self.early) >= 32:
+                    raise ValueError("pieces out of order")
+                self.early[seq] = data
+                return
+            self.sock.sendall(data)
+            self.next_seq += 1
+            while self.next_seq in self.early:
+                self.sock.sendall(self.early.pop(self.next_seq))
+                self.next_seq += 1
+
+    def read(self, offset, size, ack):
+        """(bytes from [offset], finished): waits for some, then for the burst to settle."""
+        deadline = time.monotonic() + STREAM_WAIT
+        with self.ready:
+            self.used = time.monotonic()
+            end = self.base + len(self.buffer)
+            if self.base < ack <= end:
+                del self.buffer[:ack - self.base]
+                self.base = ack
+                self.ready.notify_all()
+            if offset < self.base:
+                raise ValueError("offset already dropped")
+            seen = None
+            while True:
+                end = self.base + len(self.buffer)
+                now = time.monotonic()
+                if end >= offset + size or self.eof or now >= deadline:
+                    break
+                if end > offset:
+                    if seen == end:
+                        break
+                    seen = end
+                    self.ready.wait(min(STREAM_SETTLE, deadline - now))
+                else:
+                    self.ready.wait(deadline - now)
+            start = offset - self.base
+            data = bytes(self.buffer[start:start + size]) if end > offset else b""
+            self.used = time.monotonic()
+            return data, self.eof and offset + len(data) >= end
+
+    def close(self):
+        with self.ready:
+            self.closed = True
+            self.ready.notify_all()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.sock.close()
+
+
+class Streams:
+    def __init__(self):
+        self.items = {}
+        self.lock = threading.Lock()
+        threading.Thread(target=self.sweep, daemon=True).start()
+
+    def open(self, host, viewer):
+        with self.lock:
+            if len(self.items) >= STREAMS_MAX:
+                raise ValueError("relay busy")
+            if sum(1 for s in self.items.values() if s.viewer == viewer) >= STREAMS_PER_VIEWER:
+                raise ValueError("too many streams")
+        address = stream_address(host)
+        if address is None:
+            raise ValueError("host not allowed")
+        sock = socket.create_connection((address, 443), timeout=UPSTREAM_TIMEOUT)
+        sock.settimeout(30)
+        stream = Stream(sock, viewer)
+        token = secrets.token_urlsafe(12)
+        with self.lock:
+            self.items[token] = stream
+        return token
+
+    def get(self, token):
+        with self.lock:
+            return self.items.get(token)
+
+    def close(self, token):
+        with self.lock:
+            stream = self.items.pop(token, None)
+        if stream:
+            stream.close()
+
+    def sweep(self):
+        while True:
+            time.sleep(10)
+            now = time.monotonic()
+            with self.lock:
+                idle = [t for t, s in self.items.items() if now - s.used > STREAM_IDLE]
+            for token in idle:
+                self.close(token)
+
+
+streams = Streams()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "kinorelay"
     sys_version = ""
@@ -196,11 +377,13 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p", "/i"):
+        if url.path not in ("/r", "/p", "/i", "/s/r"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
         query = urllib.parse.parse_qs(url.query)
+        if url.path == "/s/r":
+            return self.stream_read(query)
         if url.path == "/p":
             try:
                 part = pending.get(query.get("id", [""])[0], int(query.get("n", ["-1"])[0]))
@@ -252,6 +435,62 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        url = urllib.parse.urlsplit(self.path)
+        if url.path not in ("/s/open", "/s/w", "/s/c"):
+            return self.fail(404, "not found")
+        if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
+            return self.fail(403, "bad key")
+        query = urllib.parse.parse_qs(url.query)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 <= length <= STREAM_PIECE_MAX:
+            return self.fail(400, "bad length")
+        body = self.rfile.read(length) if length else b""
+        token = query.get("id", [""])[0]
+        if url.path == "/s/open":
+            host = query.get("h", [""])[0].lower()
+            if not stream_host_allowed(host):
+                return self.fail(400, "host not allowed")
+            if not stream_limits.allow(self.client_address[0]):
+                return self.fail(429, "too many requests")
+            try:
+                token = streams.open(host, self.client_address[0])
+            except ValueError as e:
+                return self.fail(400 if "allowed" in str(e) else 429, str(e))
+            except OSError as e:
+                return self.fail(502, f"site unreachable: {type(e).__name__}")
+            return self.send_part(token.encode())
+        if url.path == "/s/c":
+            streams.close(token)
+            return self.send_part(b"")
+        stream = streams.get(token)
+        if stream is None:
+            return self.fail(410, "stream closed")
+        try:
+            stream.write(int(query.get("seq", ["-1"])[0]), body)
+        except ValueError as e:
+            return self.fail(400, str(e))
+        except OSError:
+            streams.close(token)
+            return self.fail(410, "stream closed")
+        return self.send_part(b"")
+
+    def stream_read(self, query):
+        stream = streams.get(query.get("id", [""])[0])
+        if stream is None:
+            return self.fail(410, "stream closed")
+        try:
+            offset = int(query.get("off", ["0"])[0])
+            size = min(max(int(query.get("size", ["8000"])[0]), 1), STREAM_PIECE_MAX)
+            ack = int(query.get("ack", ["0"])[0])
+            data, finished = stream.read(offset, size, ack)
+        except ValueError as e:
+            return self.fail(400, str(e))
+        return self.send_part(data, [("X-Relay-Eof", "1")] if finished else [])
 
     def send_split(self, body, chunk, status, content_type, location=None):
         """Gzipped and in parts of [chunk] bytes; the first part answers, the rest wait in [pending]."""
