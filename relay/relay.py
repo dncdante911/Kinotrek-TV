@@ -26,12 +26,20 @@ seq order); GET /s/r?id=&off=<offset>&size=<bytes>&ack=<offset> answers the byte
 waiting up to STREAM_WAIT s for some, with X-Relay-Eof: 1 once the site has closed and all is read
 (ack: everything before it has arrived and may be dropped); POST /s/c?id= closes it.
 
+GET /t?imdb=tt<digits>&kp=<digits> answers a film's ratings as JSON, {"imdb": [7.8, 123456],
+"kp": [7.9, 4567], "rt": 92, "mc": 80}, each key only when known: IMDb, Rotten Tomatoes and
+Metacritic from OMDb (OMDB_KEY), Kinopoisk and IMDb from kinopoiskapiunofficial.tech (KP_KEY).
+Without a key that source is skipped. Answers are kept in memory for RATINGS_TTL, so the free
+daily limits of the services are spent on new films only. Split like /i.
+
 Needs only the standard library; Pillow (python3-pil) is optional. Settings come from the
 environment: RELAY_BIND (host:port), RELAY_CERT, RELAY_KEY_FILE (TLS), RELAY_SECRET (shared app key).
 """
 import gzip
 import hmac
 import io
+import json
+import re
 import ipaddress
 import os
 import secrets
@@ -45,7 +53,9 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ALLOWED_HOSTS = {"rutor.info", "rutor.org.in", "rutor.org", "rutracker.org", "nnmclub.to", "megapeer.vip"}
+ALLOWED_HOSTS = {"rutor.info", "rutor.org.in", "rutor.org", "rutracker.org", "nnmclub.to", "megapeer.vip",
+                 # AniLibria's API (the anime tab); its video comes from its CDN straight to the TV.
+                 "aniliberty.top", "anilibria.top"}
 MAX_BYTES = 4_000_000
 UPSTREAM_TIMEOUT = 12
 # Per viewer address: a home screen loads ~10 pages, a search ~20.
@@ -56,7 +66,7 @@ PARTS_TTL = 120
 # Posters on release pages; a host and its subdomains (i128.fastpic.org).
 IMAGE_HOSTS = ("fastpic.org", "fastpic.ru", "lostpix.com", "imageban.ru", "ibb.co", "imgur.com",
                "radikal.ru", "pixhost.to", "imgbox.com", "postimg.cc", "geekpic.net", "youpic.su",
-               "hostingkartinok.com", "nnmstatic.win")
+               "hostingkartinok.com", "nnmstatic.win", "aniliberty.top", "anilibria.top")
 IMAGE_MAX_BYTES = 8_000_000
 IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 480, 360
 # A screen of cards asks for a poster each.
@@ -75,6 +85,15 @@ STREAMS_MAX = 600
 STREAM_OPENS_PER_MINUTE = 300
 
 SECRET = os.environ["RELAY_SECRET"].encode()
+
+OMDB_KEY = os.environ.get("OMDB_KEY", "")
+KP_KEY = os.environ.get("KP_KEY", "")
+RATINGS_TTL = 3 * 24 * 3600
+RATINGS_EMPTY_TTL = 6 * 3600
+RATINGS_MAX = 100_000
+RATINGS_RATE_PER_MINUTE = 240
+IMDB_ID = re.compile(r"^tt\d{6,10}$")
+KP_ID = re.compile(r"^\d{2,9}$")
 
 try:
     from PIL import Image, ImageOps
@@ -113,6 +132,89 @@ class RateLimit:
 limits = RateLimit(RATE_PER_MINUTE)
 image_limits = RateLimit(IMAGE_RATE_PER_MINUTE)
 stream_limits = RateLimit(STREAM_OPENS_PER_MINUTE)
+ratings_limits = RateLimit(RATINGS_RATE_PER_MINUTE)
+
+
+def fetch_json(url, headers=None):
+    """A rating service's JSON, or None when it cannot be had now."""
+    request = urllib.request.Request(url, headers={"User-Agent": "kinorelay", "Accept": "application/json", **(headers or {})})
+    try:
+        with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
+            return json.loads(response.read(1_000_000).decode("utf-8", "replace"))
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError, ValueError):
+        return None
+
+
+def number(text):
+    try:
+        return float(str(text).split("/")[0].replace("%", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+class RatingsCache:
+    def __init__(self):
+        self.items = {}
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        with self.lock:
+            entry = self.items.get(key)
+        if not entry:
+            return None
+        stored, body, empty = entry
+        return body if time.time() - stored < (RATINGS_EMPTY_TTL if empty else RATINGS_TTL) else None
+
+    def put(self, key, body, empty):
+        with self.lock:
+            if len(self.items) >= RATINGS_MAX:
+                for old in sorted(self.items, key=lambda k: self.items[k][0])[:RATINGS_MAX // 10]:
+                    del self.items[old]
+            self.items[key] = (time.time(), body, empty)
+
+
+ratings_cache = RatingsCache()
+
+
+def film_ratings(imdb, kp):
+    """Asks the services that have a key; returns (ratings dict, whether any service answered)."""
+    result, answered = {}, False
+    if KP_KEY and (kp or imdb):
+        headers = {"X-API-KEY": KP_KEY}
+        if kp:
+            film = fetch_json(f"https://kinopoiskapiunofficial.tech/api/v2.2/films/{kp}", headers)
+        else:
+            found = fetch_json(f"https://kinopoiskapiunofficial.tech/api/v2.2/films?imdbId={imdb}", headers)
+            items = (found or {}).get("items") or []
+            film = items[0] if items else ({} if found is not None else None)
+        if film is not None:
+            answered = True
+            value = number(film.get("ratingKinopoisk"))
+            if value and 0 < value <= 10:
+                result["kp"] = [value, int(film.get("ratingKinopoiskVoteCount") or 0)]
+            value = number(film.get("ratingImdb"))
+            if value and 0 < value <= 10:
+                result["imdb"] = [value, int(film.get("ratingImdbVoteCount") or 0)]
+            if not imdb and IMDB_ID.match(str(film.get("imdbId") or "")):
+                imdb = film["imdbId"]
+    if OMDB_KEY and imdb:
+        film = fetch_json(f"https://www.omdbapi.com/?i={imdb}&apikey={urllib.parse.quote(OMDB_KEY)}")
+        if film is not None and film.get("Response") == "True":
+            answered = True
+            value = number(film.get("imdbRating"))
+            if value and 0 < value <= 10:
+                result["imdb"] = [value, int(number(film.get("imdbVotes")) or 0)]
+            for rating in film.get("Ratings") or []:
+                value = number(rating.get("Value"))
+                if value is None:
+                    continue
+                if rating.get("Source") == "Rotten Tomatoes" and 0 <= value <= 100:
+                    result["rt"] = int(value)
+                elif rating.get("Source") == "Metacritic" and 0 <= value <= 100:
+                    result["mc"] = int(value)
+        elif film is not None:
+            answered = True
+    return result, answered
 
 
 def requote(url):
@@ -377,7 +479,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p", "/i", "/s/r"):
+        if url.path not in ("/r", "/p", "/i", "/s/r", "/t"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
@@ -392,6 +494,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_part(part) if part is not None else self.fail(404, "part expired")
         if url.path == "/i":
             return self.image(query)
+        if url.path == "/t":
+            return self.ratings(query)
         if not limits.allow(self.client_address[0]):
             return self.fail(429, "too many requests")
         target = query.get("u", [""])[0]
@@ -505,6 +609,29 @@ class Handler(BaseHTTPRequestHandler):
         if location:
             meta.append(("X-Relay-Location", location))
         return self.send_part(pieces[0], meta)
+
+    def ratings(self, query):
+        imdb = query.get("imdb", [""])[0]
+        kp = query.get("kp", [""])[0]
+        imdb = imdb if IMDB_ID.match(imdb) else ""
+        kp = kp if KP_ID.match(kp) else ""
+        if not imdb and not kp:
+            return self.fail(400, "bad request")
+        try:
+            chunk = int(self.headers.get("X-Relay-Chunk", "0")) or 8_000
+        except ValueError:
+            return self.fail(400, "bad request")
+        key = f"{imdb}|{kp}"
+        body = ratings_cache.get(key)
+        if body is None:
+            if not ratings_limits.allow(self.client_address[0]):
+                return self.fail(429, "too many requests")
+            result, answered = film_ratings(imdb, kp)
+            body = json.dumps(result).encode()
+            # A service that did not answer is asked again on the next request, not in hours.
+            if answered or not (OMDB_KEY or KP_KEY):
+                ratings_cache.put(key, body, empty=not result)
+        return self.send_split(body, chunk, 200, "application/json")
 
     def image(self, query):
         """A poster from an image host, scaled to the card; redirects are followed here, each checked."""

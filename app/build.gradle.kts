@@ -17,8 +17,8 @@ android {
         // Android 7.0: 2015–2016 Android TVs (Sony, Philips) never got a newer version.
         minSdk = 24
         targetSdk = 36
-        versionCode = 26
-        versionName = "2.5.0"
+        versionCode = 27
+        versionName = "2.5.5"
     }
 
     signingConfigs {
@@ -69,7 +69,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.core:core-ktx:1.19.1")
     // ProxyController: the built-in browser reaches a blocked RuTracker through the relay
-    implementation("androidx.webkit:webkit:1.12.1")
+    implementation("androidx.webkit:webkit:1.18.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
