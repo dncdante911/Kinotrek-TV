@@ -26,6 +26,7 @@ seq order); GET /s/r?id=&off=<offset>&size=<bytes>&ack=<offset> answers the byte
 waiting up to STREAM_WAIT s for some, with X-Relay-Eof: 1 once the site has closed and all is read
 (ack: everything before it has arrived and may be dropped); POST /s/c?id= closes it.
 
+POST /log stores an app crash or playback report (JSON, at most 64 KB) under RELAY_REPORTS.
 GET /t?imdb=tt<digits>&kp=<digits> answers a film's ratings as JSON, {"imdb": [7.8, 123456],
 "kp": [7.9, 4567], "rt": 92, "mc": 80}, each key only when known: IMDb, Rotten Tomatoes and
 Metacritic from OMDb (OMDB_KEY), Kinopoisk and IMDb from kinopoiskapiunofficial.tech (KP_KEY).
@@ -93,6 +94,12 @@ RATINGS_EMPTY_TTL = 6 * 3600
 RATINGS_MAX = 100_000
 RATINGS_RATE_PER_MINUTE = 240
 IMDB_ID = re.compile(r"^tt\d{6,10}$")
+
+# Crash and playback reports from the app (POST /log): JSON files, one per report, no addresses kept.
+REPORTS_DIR = os.environ.get("RELAY_REPORTS", "/var/lib/kinorelay/reports")
+REPORT_MAX = 64_000
+REPORTS_PER_MINUTE = 6
+REPORTS_PER_DAY = 2000
 KP_ID = re.compile(r"^\d{2,9}$")
 
 try:
@@ -133,6 +140,22 @@ limits = RateLimit(RATE_PER_MINUTE)
 image_limits = RateLimit(IMAGE_RATE_PER_MINUTE)
 stream_limits = RateLimit(STREAM_OPENS_PER_MINUTE)
 ratings_limits = RateLimit(RATINGS_RATE_PER_MINUTE)
+report_limits = RateLimit(REPORTS_PER_MINUTE)
+
+
+def save_report(body):
+    """Stores one app report under REPORTS_DIR/<UTC day>/; raises ValueError when it is not a JSON object."""
+    data = json.loads(body.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("not an object")
+    folder = os.path.join(REPORTS_DIR, time.strftime("%Y-%m-%d", time.gmtime()))
+    os.makedirs(folder, mode=0o750, exist_ok=True)
+    if len(os.listdir(folder)) >= REPORTS_PER_DAY:
+        raise OverflowError("enough reports today")
+    data["received"] = int(time.time())
+    name = f"{time.strftime('%H%M%S', time.gmtime())}-{secrets.token_hex(4)}.json"
+    with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
 
 
 def fetch_json(url, headers=None):
@@ -542,10 +565,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urllib.parse.urlsplit(self.path)
-        if url.path not in ("/s/open", "/s/w", "/s/c"):
+        if url.path not in ("/s/open", "/s/w", "/s/c", "/log"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
+        if url.path == "/log":
+            return self.receive_report()
         query = urllib.parse.parse_qs(url.query)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -581,6 +606,26 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             streams.close(token)
             return self.fail(410, "stream closed")
+        return self.send_part(b"")
+
+    def receive_report(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 < length <= REPORT_MAX:
+            return self.fail(400, "bad length")
+        body = self.rfile.read(length)
+        if not report_limits.allow(self.client_address[0]):
+            return self.fail(429, "too many reports")
+        try:
+            save_report(body)
+        except OverflowError as e:
+            return self.fail(429, str(e))
+        except (ValueError, UnicodeDecodeError):
+            return self.fail(400, "bad report")
+        except OSError as e:
+            return self.fail(500, f"cannot store: {type(e).__name__}")
         return self.send_part(b"")
 
     def stream_read(self, query):
