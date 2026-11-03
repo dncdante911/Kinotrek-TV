@@ -26,6 +26,7 @@ seq order); GET /s/r?id=&off=<offset>&size=<bytes>&ack=<offset> answers the byte
 waiting up to STREAM_WAIT s for some, with X-Relay-Eof: 1 once the site has closed and all is read
 (ack: everything before it has arrived and may be dropped); POST /s/c?id= closes it.
 
+GET /x/browse?cat=&popular=, /x/search?q=&cat= answer finished tracker lists from kinoindex.py.
 POST /log stores an app crash or playback report (JSON, at most 64 KB) under RELAY_REPORTS.
 GET /t?imdb=tt<digits>&kp=<digits> answers a film's ratings as JSON, {"imdb": [7.8, 123456],
 "kp": [7.9, 4567], "rt": 92, "mc": 80}, each key only when known: IMDb, Rotten Tomatoes and
@@ -95,6 +96,11 @@ RATINGS_MAX = 100_000
 RATINGS_RATE_PER_MINUTE = 240
 IMDB_ID = re.compile(r"^tt\d{6,10}$")
 
+# Kinotrek's search index (kinoindex.py) on this host: finished tracker lists for the app (GET /x/...).
+INDEX_URL = os.environ.get("KINOINDEX_URL", "http://127.0.0.1:8446")
+INDEX_RATE_PER_MINUTE = 60
+INDEX_MAX_BYTES = 2_000_000
+
 # Crash and playback reports from the app (POST /log): JSON files, one per report, no addresses kept.
 REPORTS_DIR = os.environ.get("RELAY_REPORTS", "/var/lib/kinorelay/reports")
 REPORT_MAX = 64_000
@@ -141,6 +147,7 @@ image_limits = RateLimit(IMAGE_RATE_PER_MINUTE)
 stream_limits = RateLimit(STREAM_OPENS_PER_MINUTE)
 ratings_limits = RateLimit(RATINGS_RATE_PER_MINUTE)
 report_limits = RateLimit(REPORTS_PER_MINUTE)
+index_limits = RateLimit(INDEX_RATE_PER_MINUTE)
 
 
 def save_report(body):
@@ -502,7 +509,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p", "/i", "/s/r", "/t"):
+        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
@@ -519,6 +526,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.image(query)
         if url.path == "/t":
             return self.ratings(query)
+        if url.path.startswith("/x/"):
+            return self.index(url)
         if not limits.allow(self.client_address[0]):
             return self.fail(429, "too many requests")
         target = query.get("u", [""])[0]
@@ -654,6 +663,24 @@ class Handler(BaseHTTPRequestHandler):
         if location:
             meta.append(("X-Relay-Location", location))
         return self.send_part(pieces[0], meta)
+
+    def index(self, url):
+        """A list from the search index on this host, gzipped and in parts like every answer."""
+        try:
+            chunk = int(self.headers.get("X-Relay-Chunk", "0")) or 8_000
+        except ValueError:
+            return self.fail(400, "bad request")
+        if not index_limits.allow(self.client_address[0]):
+            return self.fail(429, "too many requests")
+        target = INDEX_URL + url.path[2:] + ("?" + url.query if url.query else "")
+        try:
+            with urllib.request.urlopen(target, timeout=25) as response:
+                status, body = response.status, response.read(INDEX_MAX_BYTES)
+        except urllib.error.HTTPError as e:
+            status, body = e.code, e.read(INDEX_MAX_BYTES)
+        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as e:
+            return self.fail(503, f"index unavailable: {type(getattr(e, 'reason', e)).__name__}")
+        return self.send_split(body, chunk, status, "application/json")
 
     def ratings(self, query):
         imdb = query.get("imdb", [""])[0]
