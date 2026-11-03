@@ -29,7 +29,7 @@ waiting up to STREAM_WAIT s for some, with X-Relay-Eof: 1 once the site has clos
 GET /x/browse?cat=&popular=, /x/search?q=&cat= answer finished tracker lists from kinoindex.py.
 POST /log stores an app crash or playback report (JSON, at most 64 KB) under RELAY_REPORTS.
 GET /t?imdb=tt<digits>&kp=<digits> answers a film's ratings as JSON, {"imdb": [7.8, 123456],
-"kp": [7.9, 4567], "rt": 92, "mc": 80}, each key only when known: IMDb, Rotten Tomatoes and
+"kp": [7.9, 4567], "rt": 92, "mc": 80, "bd": "<TMDB still URL>"}, each key only when known: IMDb, Rotten Tomatoes and
 Metacritic from OMDb (OMDB_KEY), Kinopoisk and IMDb from kinopoiskapiunofficial.tech (KP_KEY).
 Without a key that source is skipped. Answers are kept in memory for RATINGS_TTL, so the free
 daily limits of the services are spent on new films only. Split like /i.
@@ -68,7 +68,7 @@ PARTS_TTL = 120
 # Posters on release pages; a host and its subdomains (i128.fastpic.org).
 IMAGE_HOSTS = ("fastpic.org", "fastpic.ru", "lostpix.com", "imageban.ru", "ibb.co", "imgur.com",
                "radikal.ru", "pixhost.to", "imgbox.com", "postimg.cc", "geekpic.net", "youpic.su",
-               "hostingkartinok.com", "nnmstatic.win", "aniliberty.top", "anilibria.top")
+               "hostingkartinok.com", "nnmstatic.win", "aniliberty.top", "anilibria.top", "image.tmdb.org")
 IMAGE_MAX_BYTES = 8_000_000
 IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 480, 360
 # A screen of cards asks for a poster each.
@@ -90,6 +90,9 @@ SECRET = os.environ["RELAY_SECRET"].encode()
 
 OMDB_KEY = os.environ.get("OMDB_KEY", "")
 KP_KEY = os.environ.get("KP_KEY", "")
+# TMDB: a wide still of the film for the back of its page ("bd" in /t), by its IMDb id.
+TMDB_KEY = os.environ.get("TMDB_KEY", "")
+TMDB_IMAGE = "https://image.tmdb.org/t/p/w1280"
 RATINGS_TTL = 3 * 24 * 3600
 RATINGS_EMPTY_TTL = 6 * 3600
 RATINGS_MAX = 100_000
@@ -244,6 +247,15 @@ def film_ratings(imdb, kp):
                     result["mc"] = int(value)
         elif film is not None:
             answered = True
+    if TMDB_KEY and imdb:
+        found = fetch_json(f"https://api.themoviedb.org/3/find/{imdb}?api_key={urllib.parse.quote(TMDB_KEY)}&external_source=imdb_id")
+        if found is not None:
+            answered = True
+            for kind in ("movie_results", "tv_results"):
+                path = next((item.get("backdrop_path") for item in found.get(kind) or [] if item.get("backdrop_path")), None)
+                if path and re.match(r"^/[A-Za-z0-9_]+\.(?:jpg|png|webp)$", path):
+                    result["bd"] = TMDB_IMAGE + path
+                    break
     return result, answered
 
 
