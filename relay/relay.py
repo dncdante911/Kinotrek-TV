@@ -283,15 +283,23 @@ def shrink(body, width):
     if Image is None:
         return body, None
     try:
-        with Image.open(io.BytesIO(body)) as picture:
+        # One picture at a time and never at full size: a 6000x8000 poster opened whole is ~150 MB,
+        # and two of those at once took the relay past its memory limit.
+        with SHRINKING, Image.open(io.BytesIO(body)) as picture:
+            if picture.width * picture.height > SHRINK_MAX_PIXELS:
+                return body, None
+            picture.draft("RGB", (width, width * 3))  # JPEGs decode at 1/2, 1/4, 1/8 straight away
+            picture.thumbnail((width, width * 3))
             picture = ImageOps.exif_transpose(picture).convert("RGB")
-            if picture.width > width:
-                picture.thumbnail((width, width * 3))
             out = io.BytesIO()
             picture.save(out, "JPEG", quality=80, optimize=True, progressive=True)
             return out.getvalue(), "image/jpeg"
     except Exception:
         return body, None
+
+
+SHRINKING = threading.Semaphore(2)
+SHRINK_MAX_PIXELS = 50_000_000
 
 
 class Parts:
