@@ -10,6 +10,7 @@ Two HTTP servers, both bound to 127.0.0.1 only:
 
 What is stored: a random installation id (made by the app after the viewer agreed), event type, minute-rounded
 time, app version, session id. Never titles, searches, magnets, addresses, devices or payments.
+GitHub APK downloads are read every hour (and on demand from the dashboard).
 Retention: raw events 30 days, per-installation days 90 days, daily aggregates 24 months.
 
 Environment: KINOSTATS_DB (default /var/lib/kinostats/stats.db), KINOSTATS_GITHUB_REPO (dncdante911/Kinotrek-TV),
@@ -44,7 +45,7 @@ UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 VERSION = re.compile(r"^[0-9A-Za-z.\-+_]{1,32}$")
 POSTS_PER_INSTALL_PER_DAY = 30
 RAW_DAYS, DAILY_DAYS, AGGREGATE_DAYS = 30, 90, 730
-GITHUB_EVERY_S = 6 * 3600
+GITHUB_EVERY_S = 3600  # one API call an hour: a new release shows within the hour
 
 db_lock = threading.Lock()
 
@@ -396,7 +397,7 @@ a{{color:var(--accent);margin-right:10px;text-decoration:none}} a.on{{font-weigh
 </style></head><body>
 <h1>Кинотрек · статистика</h1>
 <div class="sub">Активные установки, а не люди: считаются только те, кто согласился на анонимную статистику. Последние данные: {when(s["last_event"])}. Загрузки собраны: {when(s["downloads_at"])}.</div>
-<div>{tabs} · <a href="/export.csv?days={days}">CSV</a></div><br>
+<div>{tabs} · <a href="/export.csv?days={days}">CSV</a> · <a href="/refresh?days={days}">Обновить загрузки сейчас</a></div><br>
 <div class="grid">{cards}</div>
 <h2>Активные установки по дням (UTC)</h2>{svg_bars(s["series"], "active", "#5ee0d2")}
 <h2>Новые установки по дням</h2>{svg_bars(s["series"], "new", "#6aa8ff")}
@@ -421,6 +422,17 @@ class Admin(BaseHTTPRequestHandler):
             days = 30
         if url.path == "/":
             return self.send(200, page(days).encode(), "text/html; charset=utf-8")
+        if url.path == "/refresh":
+            # Read GitHub now (a release published a minute ago), then back to the dashboard.
+            try:
+                log(f"github (by hand): {collect_github()} apk assets")
+            except Exception as e:
+                log(f"github {type(e).__name__}: {e}")
+            self.send_response(303)
+            self.send_header("Location", f"/?days={days}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if url.path == "/api/stats":
             return self.send(200, json.dumps(stats(days), ensure_ascii=False).encode(), "application/json")
         if url.path == "/export.csv":
