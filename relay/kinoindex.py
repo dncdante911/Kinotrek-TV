@@ -95,6 +95,7 @@ LINKED_IMAGE = re.compile(r"<a[^>]+href=[\"']([^\"']+\.(?:jpe?g|png|webp))[\"'][
 NOT_POSTER = re.compile(r"imdb|kinopoisk|/flag/|smile|rating|\.gif(\?|$)|button|banner|userbar|logo", re.I)
 NNM_PROXY = re.compile(r"https?://[^\"'\s]*/forum/image\.php\?link=([^\"'\s&]+)", re.I)
 LINE_BREAK = re.compile(r"<br\s*/?>|</p>|</div>|</li>", re.I)
+GENRE_FIELD = re.compile(r"(?:^|\s)Жанры?\s*:\s*(.+)$", re.I)
 COUNTRY_FIELD = re.compile(r"(?:^|\s)(?:Страна|Производство|Страна производства)\s*:\s*(.+)$", re.I)
 IMDB_ID = re.compile(r"imdb\.com/title/(tt\d{6,10})|/imdb/pic/(\d{6,10})\.gif", re.I)
 KINOPOISK_ID = re.compile(r"kinopoisk\.ru/(?:(?:film|series)/(?:film/)?|rating/|level/1/film/)?(\d{2,9})(?:/|\.gif|\.xml|[\"'?])", re.I)
@@ -307,7 +308,7 @@ def absolute(base, path):
 
 def parse_page(text, page, source):
     """Cover, countries, IMDb and Kinopoisk ids and the magnet of one release page; empty when unreadable."""
-    info = {"magnet": None, "poster": "", "country": "", "imdb": "", "kp": ""}
+    info = {"magnet": None, "poster": "", "country": "", "imdb": "", "kp": "", "genre": ""}
     magnet = MAGNET.search(text)
     if magnet:
         info["magnet"] = magnet.group(1).replace("&amp;", "&")
@@ -339,12 +340,18 @@ def parse_page(text, page, source):
         if poster:
             info["poster"] = poster
             break
-    # The field may follow a picture on the same line (NNM-Club), so it is looked for anywhere in a line.
+    # The fields may follow a picture on the same line (NNM-Club), so they are looked for anywhere in a line.
     for line in LINE_BREAK.split(block):
         line = SPACES.sub(" ", html.unescape(TAG.sub(" ", line))).strip()
-        field = COUNTRY_FIELD.search(line)
-        if field and field.group(1).strip():
-            info["country"] = field.group(1).strip()[:160]
+        if not info["country"]:
+            field = COUNTRY_FIELD.search(line)
+            if field and field.group(1).strip():
+                info["country"] = field.group(1).strip()[:160]
+        if not info["genre"]:
+            field = GENRE_FIELD.search(line)
+            if field and field.group(1).strip():
+                info["genre"] = field.group(1).strip()[:160]
+        if info["country"] and info["genre"]:
             break
     imdb = IMDB_ID.search(wide)
     if imdb:
@@ -364,6 +371,11 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("""CREATE TABLE IF NOT EXISTS pages (
             page TEXT PRIMARY KEY, magnet TEXT, poster TEXT, country TEXT, imdb TEXT, kp TEXT, read_at INTEGER)""")
+        # Genres came later: pages read before have NULL there and are read once more when they show up again.
+        columns = [row[1] for row in self.db.execute("PRAGMA table_info(pages)")]
+        if "genre" not in columns:
+            self.db.execute("ALTER TABLE pages ADD COLUMN genre TEXT")
+            self.db.commit()
         self.lock = threading.Lock()
 
     def get(self, pages):
@@ -373,15 +385,15 @@ class Store:
         with self.lock:
             for i in range(0, len(pages), 400):
                 chunk = pages[i:i + 400]
-                rows = self.db.execute(f"SELECT page, magnet, poster, country, imdb, kp FROM pages WHERE page IN ({','.join('?' * len(chunk))})", chunk)
-                for page, magnet, poster, country, imdb, kp in rows:
-                    out[page] = {"magnet": magnet, "poster": poster, "country": country, "imdb": imdb, "kp": kp}
+                rows = self.db.execute(f"SELECT page, magnet, poster, country, imdb, kp, genre FROM pages WHERE page IN ({','.join('?' * len(chunk))})", chunk)
+                for page, magnet, poster, country, imdb, kp, genre in rows:
+                    out[page] = {"magnet": magnet, "poster": poster, "country": country, "imdb": imdb, "kp": kp, "genre": genre}
         return out
 
     def put(self, page, info):
         with self.lock:
-            self.db.execute("INSERT OR REPLACE INTO pages VALUES (?,?,?,?,?,?,?)",
-                            (page, info["magnet"], info["poster"], info["country"], info["imdb"], info["kp"], int(time.time())))
+            self.db.execute("INSERT OR REPLACE INTO pages (page, magnet, poster, country, imdb, kp, read_at, genre) VALUES (?,?,?,?,?,?,?,?)",
+                            (page, info["magnet"], info["poster"], info["country"], info["imdb"], info["kp"], int(time.time()), info.get("genre") or ""))
             self.db.commit()
 
     def count(self):
@@ -415,7 +427,8 @@ class PageQueue:
         known = store.get([h["p"] for h in hits])
         with self.cond:
             for h in hits:
-                if h["p"] in known or h["p"] in self.waiting:
+                # Read, and after genres were added (NULL genre: read before, worth one more visit).
+                if (h["p"] in known and known[h["p"]].get("genre") is not None) or h["p"] in self.waiting:
                     continue
                 if len(self.items) >= PAGE_QUEUE_MAX:
                     break
@@ -571,7 +584,7 @@ def enrich(hits):
         info = known.get(h["p"])
         h = {k: v for k, v in h.items() if v not in (None, "", 0) or k in ("se", "pe", "d", "n")}
         if info:
-            for key, short in (("poster", "po"), ("country", "c"), ("imdb", "i"), ("kp", "k")):
+            for key, short in (("poster", "po"), ("country", "c"), ("imdb", "i"), ("kp", "k"), ("genre", "g")):
                 if info.get(key):
                     h[short] = info[key]
             # Read but without a cover: the app should not read the page again for one.
