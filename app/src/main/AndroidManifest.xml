@@ -95,6 +95,15 @@
             android:theme="@style/Theme.TrackerTV"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|density|uiMode" />
 
+        <!-- Restarts the app in a new process (language change); lives in its own process for that. -->
+        <activity
+            android:name=".RestartActivity"
+            android:exported="false"
+            android:process=":restart"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <activity
             android:name=".web.RutrackerActivity"
             android:exported="false"
