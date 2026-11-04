@@ -19,9 +19,11 @@ echo "kinostats: $(systemctl is-active kinostats)  kinorelay: $(systemctl is-act
 printf 'ingest direct (expect 400 schema): '
 curl -s -X POST -H 'Content-Type: application/json' --data '{}' 127.0.0.1:8447/v1/telemetry/events; echo
 . /etc/kinorelay/env
-PORT="${RELAY_BIND##*:}"
-printf 'through relay :%s (expect 400 schema): ' "$PORT"
-curl -sk -X POST -H "X-Relay-Key: $RELAY_SECRET" -H 'Content-Type: application/json' --data '{}' "https://127.0.0.1:$PORT/v1/telemetry/events"; echo
+# The relay listens where RELAY_BIND says (a LAN address on the office server, 127.0.0.1 behind HAProxy).
+HOSTPORT="$RELAY_BIND"
+case "$HOSTPORT" in 0.0.0.0:*|:*) HOSTPORT="127.0.0.1:${RELAY_BIND##*:}" ;; esac
+printf 'through relay %s (expect 400 schema): ' "$HOSTPORT"
+curl -sk -m 10 -X POST -H "X-Relay-Key: $RELAY_SECRET" -H 'Content-Type: application/json' --data '{}' "https://$HOSTPORT/v1/telemetry/events" || true; echo
 printf 'admin page: '
 curl -s 127.0.0.1:8448/ | grep -o '<title>[^<]*</title>'
 printf 'listening (must be 127.0.0.1 only): '
