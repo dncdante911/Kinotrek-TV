@@ -34,6 +34,11 @@ FFmpeg собирается без `--enable-gpl` и `--enable-nonfree`, тол�
 | Источник | Для чего | Условия |
 |---|---|---|
 | [iptv-org/iptv](https://github.com/iptv-org/iptv) | каталог открытых телеканалов | плейлисты — The Unlicense; потоки принадлежат вещателям |
+| [Free-TV/IPTV](https://github.com/Free-TV/IPTV) | каталог бесплатных эфирных телеканалов | условия проекта; потоки принадлежат вещателям |
 | [epg.pw](https://epg.pw) | программа передач (XMLTV) | условия сервиса |
 | [YouTube](https://www.youtube.com) | трейлеры: встроенный плеер YouTube (IFrame API) | [Условия использования YouTube](https://www.youtube.com/t/terms) |
-| Rutor, RuTracker | поиск раздач и описания | условия сайтов |
+| Rutor, NNM-Club, Megapeer, RuTracker | поиск раздач и описания | условия сайтов |
+| [AniLibria](https://anilibria.top) | каталог и онлайн-серии аниме | условия сервиса |
+| [TMDB](https://www.themoviedb.org) | кадры из фильмов (через сервер Кинотрека) | [условия API TMDB](https://www.themoviedb.org/api-terms-of-use); This product uses the TMDB API but is not endorsed or certified by TMDB |
+| [OMDb API](https://www.omdbapi.com), [Kinopoisk API Unofficial](https://kinopoiskapiunofficial.tech), [Wikidata](https://www.wikidata.org) | рейтинги фильмов (через сервер Кинотрека) | условия сервисов; данные Wikidata — CC0 |
+| [GitHub Releases](https://github.com/dncdante911/Kinotrek-TV/releases) | проверка и загрузка обновлений | условия GitHub |
