@@ -1,0 +1,28 @@
+[Unit]
+Description=Kinotrek usage statistics (localhost only; relay.py forwards the app's events)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kinorelay
+Group=kinorelay
+ExecStart=/usr/bin/python3 /opt/kinorelay/kinostats.py
+StateDirectory=kinostats
+Environment=KINOSTATS_DB=/var/lib/kinostats/stats.db
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+MemoryMax=96M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

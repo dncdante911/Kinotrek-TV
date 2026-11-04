@@ -28,6 +28,8 @@ waiting up to STREAM_WAIT s for some, with X-Relay-Eof: 1 once the site has clos
 
 GET /x/browse?cat=&popular=, /x/search?q=&cat= answer finished tracker lists from kinoindex.py.
 POST /log stores an app crash or playback report (JSON, at most 64 KB) under RELAY_REPORTS.
+POST /v1/telemetry/events, /v1/telemetry/delete pass anonymous usage events (only from viewers who agreed) to
+kinostats.py on this host; no address of the sender is passed on or kept.
 GET /t?imdb=tt<digits>&kp=<digits> answers a film's ratings as JSON, {"imdb": [7.8, 123456],
 "kp": [7.9, 4567], "rt": 92, "mc": 80, "bd": "<TMDB still URL>"}, each key only when known: IMDb, Rotten Tomatoes and
 Metacritic from OMDb (OMDB_KEY), Kinopoisk and IMDb from kinopoiskapiunofficial.tech (KP_KEY).
@@ -104,6 +106,12 @@ INDEX_URL = os.environ.get("KINOINDEX_URL", "http://127.0.0.1:8446")
 INDEX_RATE_PER_MINUTE = 60
 INDEX_MAX_BYTES = 2_000_000
 
+# Usage statistics (kinostats.py on this host, localhost only). Without it the paths answer 404.
+STATS_URL = os.environ.get("KINOSTATS_URL", "http://127.0.0.1:8447")
+STATS_PATHS = ("/v1/telemetry/events", "/v1/telemetry/delete")
+STATS_MAX = 16_384
+STATS_PER_MINUTE = 10
+
 # Crash and playback reports from the app (POST /log): JSON files, one per report, no addresses kept.
 REPORTS_DIR = os.environ.get("RELAY_REPORTS", "/var/lib/kinorelay/reports")
 REPORT_MAX = 64_000
@@ -150,6 +158,7 @@ image_limits = RateLimit(IMAGE_RATE_PER_MINUTE)
 stream_limits = RateLimit(STREAM_OPENS_PER_MINUTE)
 ratings_limits = RateLimit(RATINGS_RATE_PER_MINUTE)
 report_limits = RateLimit(REPORTS_PER_MINUTE)
+stats_limits = RateLimit(STATS_PER_MINUTE)
 index_limits = RateLimit(INDEX_RATE_PER_MINUTE)
 
 
@@ -594,12 +603,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urllib.parse.urlsplit(self.path)
-        if url.path not in ("/s/open", "/s/w", "/s/c", "/log"):
+        if url.path not in ("/s/open", "/s/w", "/s/c", "/log") + STATS_PATHS:
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
         if url.path == "/log":
             return self.receive_report()
+        if url.path in STATS_PATHS:
+            return self.forward_stats(url.path)
         query = urllib.parse.parse_qs(url.query)
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -636,6 +647,29 @@ class Handler(BaseHTTPRequestHandler):
             streams.close(token)
             return self.fail(410, "stream closed")
         return self.send_part(b"")
+
+    def forward_stats(self, path):
+        """Hands the body to kinostats as is; the client's address stays here (only in the rate limiter)."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 < length <= STATS_MAX:
+            return self.fail(400, "bad length")
+        body = self.rfile.read(length)
+        if not stats_limits.allow(self.client_address[0]):
+            return self.fail(429, "too many requests")
+        request = urllib.request.Request(STATS_URL + path, data=body, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                status, answer = response.status, response.read(4096)
+        except urllib.error.HTTPError as e:
+            status, answer = e.code, e.read(4096)
+        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError):
+            return self.fail(404, "no statistics here")
+        if status != 200:
+            return self.fail(status, answer.decode("utf-8", "replace")[:200])
+        return self.send_part(answer)
 
     def receive_report(self):
         try:
