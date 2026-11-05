@@ -17,8 +17,8 @@ android {
         // Android 7.0: 2015–2016 Android TVs (Sony, Philips) never got a newer version.
         minSdk = 24
         targetSdk = 36
-        versionCode = 37
-        versionName = "2.7.7.1-fix"
+        versionCode = 38
+        versionName = "2.7.8"
     }
 
     signingConfigs {
