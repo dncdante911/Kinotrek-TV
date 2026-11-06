@@ -1,7 +1,18 @@
+<!-- Themed icon (Android 13+): the clapperboard with its play button, one color. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="1.08" android:scaleY="1.08" android:translateY="-3">
+    <!-- board with the play button cut out -->
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+        android:pathData="M30,58h48a5,5 0,0 1,5 5v13a5,5 0,0 1,-5 5h-48a5,5 0,0 1,-5 -5v-13a5,5 0,0 1,5 -5zM51,64L51,74L59.5,69Z" />
+    <!-- striped band -->
     <path android:fillColor="#FFFFFFFF"
-        android:pathData="M54,30a24,24 0,1 1,0 48a24,24 0,1 1,0 -48zM47,42.5L47,65.5L66.5,54Z"
-        android:fillType="evenOdd" />
+        android:pathData="M25,48h6l-5,7h-1zM35,48h8l-5,7h-8zM47,48h8l-5,7h-8zM59,48h8l-5,7h-8zM71,48h8l-5,7h-8zM83,48v7h-9l5,-7z" />
+    <!-- clapper stick -->
+    <group android:pivotX="27" android:pivotY="46" android:rotation="-15">
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M27,38h6l-5,7h-1zM37,38h8l-5,7h-8zM49,38h8l-5,7h-8zM61,38h8l-5,7h-8zM73,38h8l-5,7h-8z" />
+    </group>
+    </group>
 </vector>

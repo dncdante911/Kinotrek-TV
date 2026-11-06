@@ -70,7 +70,8 @@ PARTS_TTL = 120
 # Posters on release pages; a host and its subdomains (i128.fastpic.org).
 IMAGE_HOSTS = ("fastpic.org", "fastpic.ru", "lostpix.com", "imageban.ru", "ibb.co", "imgur.com",
                "radikal.ru", "pixhost.to", "imgbox.com", "postimg.cc", "geekpic.net", "youpic.su",
-               "hostingkartinok.com", "nnmstatic.win", "aniliberty.top", "anilibria.top", "image.tmdb.org")
+               "hostingkartinok.com", "nnmstatic.win", "aniliberty.top", "anilibria.top", "image.tmdb.org",
+               "kinopoiskapiunofficial.tech")
 IMAGE_MAX_BYTES = 8_000_000
 IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 480, 360
 # A screen of cards asks for a poster each.
@@ -95,6 +96,9 @@ KP_KEY = os.environ.get("KP_KEY", "")
 # TMDB: a wide still of the film for the back of its page ("bd" in /t), by its IMDb id.
 TMDB_KEY = os.environ.get("TMDB_KEY", "")
 TMDB_IMAGE = "https://image.tmdb.org/t/p/w1280"
+# Covers for releases whose page has none (some Megapeer and Rutor pages): TMDB's poster, else Kinopoisk's.
+TMDB_POSTER = "https://image.tmdb.org/t/p/w500"
+KP_POSTER = re.compile(r"^https://kinopoiskapiunofficial\.tech/images/posters/[a-z]+/\d+\.jpg$")
 RATINGS_TTL = 3 * 24 * 3600
 RATINGS_EMPTY_TTL = 6 * 3600
 RATINGS_MAX = 100_000
@@ -234,6 +238,9 @@ def film_ratings(imdb, kp):
             value = number(film.get("ratingKinopoisk"))
             if value and 0 < value <= 10:
                 result["kp"] = [value, int(film.get("ratingKinopoiskVoteCount") or 0)]
+            poster = str(film.get("posterUrlPreview") or film.get("posterUrl") or "")
+            if KP_POSTER.match(poster):
+                result["pt"] = poster
             value = number(film.get("ratingImdb"))
             if value and 0 < value <= 10:
                 result["imdb"] = [value, int(film.get("ratingImdbVoteCount") or 0)]
@@ -260,6 +267,11 @@ def film_ratings(imdb, kp):
         found = fetch_json(f"https://api.themoviedb.org/3/find/{imdb}?api_key={urllib.parse.quote(TMDB_KEY)}&external_source=imdb_id")
         if found is not None:
             answered = True
+            for kind in ("movie_results", "tv_results"):
+                poster = next((item.get("poster_path") for item in found.get(kind) or [] if item.get("poster_path")), None)
+                if poster and re.match(r"^/[A-Za-z0-9_]+\.(?:jpg|png|webp)$", poster):
+                    result["pt"] = TMDB_POSTER + poster
+                    break
             for kind in ("movie_results", "tv_results"):
                 path = next((item.get("backdrop_path") for item in found.get(kind) or [] if item.get("backdrop_path")), None)
                 if path and re.match(r"^/[A-Za-z0-9_]+\.(?:jpg|png|webp)$", path):

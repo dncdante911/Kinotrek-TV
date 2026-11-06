@@ -1,9 +1,44 @@
+<!-- A clapperboard (cinema) with a play button on it (watch online). Kept inside the adaptive icon's
+     safe zone (the middle 66 of 108), so no launcher mask cuts it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:strokeColor="#555EE0D2" android:strokeWidth="2"
-        android:pathData="M54,54m-29,0a29,29 0,1 1,58 0a29,29 0,1 1,-58 0" />
-    <path android:fillColor="#FF5EE0D2"
-        android:pathData="M54,54m-24,0a24,24 0,1 1,48 0a24,24 0,1 1,-48 0" />
-    <path android:fillColor="#FF0A0E16" android:pathData="M47,42.5L47,65.5L66.5,54Z" />
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="1.08" android:scaleY="1.08" android:translateY="-3">
+
+    <!-- soft shadow under the board -->
+    <path android:fillColor="#40000000"
+        android:pathData="M31,51h48a5,5 0,0 1,5 5v22a5,5 0,0 1,-5 5h-48a5,5 0,0 1,-5 -5v-22a5,5 0,0 1,5 -5z" />
+
+    <!-- the board -->
+    <path android:pathData="M30,48h48a5,5 0,0 1,5 5v23a5,5 0,0 1,-5 5h-48a5,5 0,0 1,-5 -5v-23a5,5 0,0 1,5 -5z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear"
+                android:startX="54" android:startY="48" android:endX="54" android:endY="81"
+                android:startColor="#FF26324A" android:endColor="#FF121A2A" />
+        </aapt:attr>
+    </path>
+
+    <!-- the striped band on the board -->
+    <group>
+        <clip-path android:pathData="M25,48h58v8h-58z" />
+        <path android:fillColor="#FFF4F6FA" android:pathData="M25,48h58v8h-58z" />
+        <path android:fillColor="#FFFF5E57"
+            android:pathData="M27,56l6,-8h8l-6,8zM43,56l6,-8h8l-6,8zM59,56l6,-8h8l-6,8zM75,56l6,-8h8l-6,8zM11,56l6,-8h8l-6,8z" />
+    </group>
+
+    <!-- the clapper stick, lifted on its hinge -->
+    <group android:pivotX="27" android:pivotY="46" android:rotation="-15">
+        <clip-path android:pathData="M27,37h56v8h-56z" />
+        <path android:fillColor="#FFF4F6FA" android:pathData="M27,37h56v8h-56z" />
+        <path android:fillColor="#FFFF5E57"
+            android:pathData="M29,45l6,-8h8l-6,8zM45,45l6,-8h8l-6,8zM61,45l6,-8h8l-6,8zM77,45l6,-8h8l-6,8zM13,45l6,-8h8l-6,8z" />
+    </group>
+    <!-- the hinge -->
+    <path android:fillColor="#FF0A0E16" android:pathData="M27,46m-2.6,0a2.6,2.6 0,1 1,5.2 0a2.6,2.6 0,1 1,-5.2 0" />
+
+    <!-- the play button -->
+    <path android:fillColor="#FF5EE0D2" android:pathData="M54,68.5m-9.5,0a9.5,9.5 0,1 1,19 0a9.5,9.5 0,1 1,-19 0" />
+    <path android:fillColor="#FF0A0E16" android:pathData="M51,63.5L51,73.5L59.5,68.5Z" />
+    </group>
 </vector>

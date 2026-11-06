@@ -1,3 +1,4 @@
+<!-- A night cinema hall: deep blue to violet, with a projector's light falling from the top. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
@@ -6,14 +7,22 @@
         <aapt:attr name="android:fillColor">
             <gradient android:type="linear"
                 android:startX="0" android:startY="0" android:endX="108" android:endY="108"
-                android:startColor="#FF0A0E16" android:endColor="#FF17404F" />
+                android:startColor="#FF101A33" android:endColor="#FF2A1240" />
         </aapt:attr>
     </path>
-    <path android:pathData="M108,0m-46,0a46,46 0,1 1,92 0a46,46 0,1 1,-92 0">
+    <!-- the projector beam -->
+    <path android:pathData="M40,0L68,0L96,108L12,108Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear"
+                android:startX="54" android:startY="0" android:endX="54" android:endY="108"
+                android:startColor="#405EE0D2" android:endColor="#005EE0D2" />
+        </aapt:attr>
+    </path>
+    <path android:pathData="M54,8m-30,0a30,30 0,1 1,60 0a30,30 0,1 1,-60 0">
         <aapt:attr name="android:fillColor">
             <gradient android:type="radial"
-                android:centerX="108" android:centerY="0" android:gradientRadius="60"
-                android:startColor="#664C8DFF" android:endColor="#004C8DFF" />
+                android:centerX="54" android:centerY="8" android:gradientRadius="30"
+                android:startColor="#555EE0D2" android:endColor="#005EE0D2" />
         </aapt:attr>
     </path>
 </vector>
