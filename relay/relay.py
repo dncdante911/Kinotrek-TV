@@ -538,7 +538,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search"):
+        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search", "/x/similar", "/x/meaning"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")

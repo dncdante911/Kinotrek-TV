@@ -95,6 +95,8 @@ LINKED_IMAGE = re.compile(r"<a[^>]+href=[\"']([^\"']+\.(?:jpe?g|png|webp))[\"'][
 NOT_POSTER = re.compile(r"imdb|kinopoisk|/flag/|smile|rating|\.gif(\?|$)|button|banner|userbar|logo", re.I)
 NNM_PROXY = re.compile(r"https?://[^\"'\s]*/forum/image\.php\?link=([^\"'\s&]+)", re.I)
 LINE_BREAK = re.compile(r"<br\s*/?>|</p>|</div>|</li>", re.I)
+STORY_FIELD = re.compile(r"^(?:Описание(?: фильма| сериала)?|О фильме|О сериале|О мультфильме|Сюжет)\s*:?\s*(.*)$", re.I)
+ANY_FIELD = re.compile(r"^[А-ЯЁA-Z][^:]{1,40}:\s")
 GENRE_FIELD = re.compile(r"(?:^|\s)Жанры?\s*:\s*(.+)$", re.I)
 COUNTRY_FIELD = re.compile(r"(?:^|\s)(?:Страна|Производство|Страна производства)\s*:\s*(.+)$", re.I)
 IMDB_ID = re.compile(r"imdb\.com/title/(tt\d{6,10})|/imdb/pic/(\d{6,10})\.gif", re.I)
@@ -308,7 +310,7 @@ def absolute(base, path):
 
 def parse_page(text, page, source):
     """Cover, countries, IMDb and Kinopoisk ids and the magnet of one release page; empty when unreadable."""
-    info = {"magnet": None, "poster": "", "country": "", "imdb": "", "kp": "", "genre": ""}
+    info = {"magnet": None, "poster": "", "country": "", "imdb": "", "kp": "", "genre": "", "story": ""}
     magnet = MAGNET.search(text)
     if magnet:
         info["magnet"] = magnet.group(1).replace("&amp;", "&")
@@ -340,6 +342,24 @@ def parse_page(text, page, source):
         if poster:
             info["poster"] = poster
             break
+    # The description: the text after «Описание:» / «О фильме:» up to the next field, for the meaning of the film.
+    story, collecting = [], False
+    for line in LINE_BREAK.split(block):
+        line = SPACES.sub(" ", html.unescape(TAG.sub(" ", line))).strip()
+        if collecting:
+            if not line and story:
+                break
+            if ANY_FIELD.match(line) or sum(map(len, story)) > 1000:
+                break
+            if line:
+                story.append(line)
+            continue
+        m = STORY_FIELD.match(line)
+        if m:
+            collecting = True
+            if m.group(1).strip():
+                story.append(m.group(1).strip())
+    info["story"] = " ".join(story)[:1200]
     # The fields may follow a picture on the same line (NNM-Club), so they are looked for anywhere in a line.
     for line in LINE_BREAK.split(block):
         line = SPACES.sub(" ", html.unescape(TAG.sub(" ", line))).strip()
@@ -376,6 +396,10 @@ class Store:
         if "genre" not in columns:
             self.db.execute("ALTER TABLE pages ADD COLUMN genre TEXT")
             self.db.commit()
+        # Descriptions came later still: NULL means read before, worth one more visit when the page shows up.
+        if "story" not in columns:
+            self.db.execute("ALTER TABLE pages ADD COLUMN story TEXT")
+            self.db.commit()
         self.lock = threading.Lock()
 
     def get(self, pages):
@@ -385,15 +409,15 @@ class Store:
         with self.lock:
             for i in range(0, len(pages), 400):
                 chunk = pages[i:i + 400]
-                rows = self.db.execute(f"SELECT page, magnet, poster, country, imdb, kp, genre FROM pages WHERE page IN ({','.join('?' * len(chunk))})", chunk)
-                for page, magnet, poster, country, imdb, kp, genre in rows:
-                    out[page] = {"magnet": magnet, "poster": poster, "country": country, "imdb": imdb, "kp": kp, "genre": genre}
+                rows = self.db.execute(f"SELECT page, magnet, poster, country, imdb, kp, genre, story FROM pages WHERE page IN ({','.join('?' * len(chunk))})", chunk)
+                for page, magnet, poster, country, imdb, kp, genre, story in rows:
+                    out[page] = {"magnet": magnet, "poster": poster, "country": country, "imdb": imdb, "kp": kp, "genre": genre, "story": story}
         return out
 
     def put(self, page, info):
         with self.lock:
-            self.db.execute("INSERT OR REPLACE INTO pages (page, magnet, poster, country, imdb, kp, read_at, genre) VALUES (?,?,?,?,?,?,?,?)",
-                            (page, info["magnet"], info["poster"], info["country"], info["imdb"], info["kp"], int(time.time()), info.get("genre") or ""))
+            self.db.execute("INSERT OR REPLACE INTO pages (page, magnet, poster, country, imdb, kp, read_at, genre, story) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (page, info["magnet"], info["poster"], info["country"], info["imdb"], info["kp"], int(time.time()), info.get("genre") or "", info.get("story") or ""))
             self.db.commit()
 
     def count(self):
@@ -428,7 +452,8 @@ class PageQueue:
         with self.cond:
             for h in hits:
                 # Read, and after genres were added (NULL genre: read before, worth one more visit).
-                if (h["p"] in known and known[h["p"]].get("genre") is not None) or h["p"] in self.waiting:
+                done = h["p"] in known and known[h["p"]].get("genre") is not None and (sense is None or known[h["p"]].get("story") is not None)
+                if done or h["p"] in self.waiting:
                     continue
                 if len(self.items) >= PAGE_QUEUE_MAX:
                     break
@@ -648,6 +673,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/browse":
             popular = query.get("popular", ["0"])[0] == "1"
             hits, errors = browse_cache.get((cat, popular), lambda: browse(cat, popular))
+        elif url.path in ("/similar", "/meaning"):
+            return self.meaning(url.path, query)
         elif url.path == "/search":
             text = " ".join(query.get("q", [""])[0].split())[:120]
             if len(text) < 2:
@@ -656,8 +683,34 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return self.send(404, b'{"error":"not found"}')
         pages.add(hits[:40])
+        if sense is not None:
+            sense.offer(hits)
         body = answer(hits, errors, etag)
         stats.add(len(body), body.startswith(b'{"v": 1, "e"'))
+        return self.send(200, body)
+
+    def meaning(self, path, query):
+        """Similar films (?page=&t=) or search by description (?q=): only with kinosense on."""
+        if sense is None:
+            return self.send(404, b'{"error":"no meaning here"}')
+        try:
+            if path == "/similar":
+                page = query.get("page", [""])[0]
+                if not page.startswith(("http://", "https://")):
+                    return self.send(400, b'{"error":"bad page"}')
+                hits = sense.similar(page, query.get("t", [""])[0][:200])
+                if hits is None:
+                    return self.send(404, b'{"error":"page not read yet"}')
+            else:
+                text = " ".join(query.get("q", [""])[0].split())[:200]
+                if len(text) < 3:
+                    return self.send(400, b'{"error":"short query"}')
+                hits = sense.meaning(text)
+        except Exception as e:  # the LLM box is away: the app shows nothing new, everything else works
+            print("meaning", type(e).__name__, e, file=sys.stderr, flush=True)
+            return self.send(503, b'{"error":"meaning unavailable"}')
+        body = answer(hits, [], "")
+        stats.add(len(body), False)
         return self.send(200, body)
 
     def send(self, status, body):
@@ -668,9 +721,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+sense = None
+
+
 def main():
-    global store
+    global store, sense
     store = Store(DB_PATH)
+    try:
+        import kinosense
+        if kinosense.ENABLED:
+            sense = kinosense.Sense(store.db, store.lock, store.get)
+            threading.Thread(target=sense.worker, daemon=True).start()
+            print("kinosense on", kinosense.URL, flush=True)
+    except ImportError:
+        pass
     threading.Thread(target=page_worker, daemon=True).start()
     # A standby index (the office relay behind the cloud one) builds lists only when asked: its uplink is for other work.
     if not STANDBY:

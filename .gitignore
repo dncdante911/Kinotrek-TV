@@ -6,6 +6,7 @@
 local.properties
 release/*.jks
 release/signing.properties
+release/google-oauth.properties
 *.apk
 *.aab
 *.dm

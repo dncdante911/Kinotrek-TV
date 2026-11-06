@@ -7,6 +7,10 @@ plugins {
 
 val signingFile = rootProject.file("release/signing.properties")
 val signing = Properties().apply { if (signingFile.exists()) signingFile.inputStream().use { load(it) } }
+// Google OAuth client "TVs and Limited Input devices" for library backups in Google Drive; without it the
+// feature stays hidden. Not committed (release/google-oauth.properties: clientId=…, clientSecret=…).
+val googleFile = rootProject.file("release/google-oauth.properties")
+val google = Properties().apply { if (googleFile.exists()) googleFile.inputStream().use { load(it) } }
 
 android {
     namespace = "org.trackertv.player"
@@ -17,8 +21,10 @@ android {
         // Android 7.0: 2015–2016 Android TVs (Sony, Philips) never got a newer version.
         minSdk = 24
         targetSdk = 36
-        versionCode = 38
-        versionName = "2.7.8"
+        versionCode = 39
+        versionName = "2.8.0"
+        buildConfigField("String", "GDRIVE_CLIENT_ID", "\"${google.getProperty("clientId", "")}\"")
+        buildConfigField("String", "GDRIVE_CLIENT_SECRET", "\"${google.getProperty("clientSecret", "")}\"")
     }
 
     signingConfigs {
