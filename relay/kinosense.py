@@ -25,6 +25,7 @@ URL = os.environ.get("KINOLLM_URL", "").rstrip("/")
 KEY = os.environ.get("KINOLLM_KEY", "")
 CA = os.environ.get("KINOLLM_CA", "")
 MODEL = os.environ.get("KINOLLM_MODEL", "bge-m3")
+CHAT_MODEL = os.environ.get("KINOLLM_CHAT_MODEL", "gemma4:12b-it-qat")
 ENABLED = bool(URL and KEY and np is not None)
 
 BATCH = 16
@@ -84,6 +85,39 @@ class Sense:
             n = np.linalg.norm(a)
             out.append(a / n if n else a)
         return out
+
+    PLAN_PROMPT = (
+        "Ты разбираешь поисковый запрос зрителя к каталогу раздач фильмов и сериалов (описания на русском). "
+        "Пойми, что он ищет, даже если сказано приблизительно или с опечатками. Ответ только JSON: "
+        '{"kind":"movie|series|any","title":"название фильма или сериала, если запрос — название или его часть, иначе пусто",'
+        '"people":["актёры, режиссёры: имя и фамилия в именительном падеже по-русски"],'
+        '"genres":["жанры: боевик, комедия, фантастика, ужасы, драма, триллер, катастрофа, мультфильм, аниме…"],'
+        '"keywords":["3-6 слов или коротких фраз, которые встретятся в описании такого фильма: темы, сеттинг, '
+        'синонимы и родственные понятия (для «про людей со сверхспособностями»: сверхспособности, супергерои, мутанты, комикс, Marvel, DC)"]}')
+
+    def understand(self, text):
+        """What a query asks for: {kind, title, people, genres, keywords} from the chat model, or None when it is out of reach."""
+        body = json.dumps({"model": CHAT_MODEL, "stream": False, "think": False, "format": "json",
+                           "options": {"temperature": 0, "num_predict": 300},
+                           "messages": [{"role": "system", "content": self.PLAN_PROMPT}, {"role": "user", "content": text}]}).encode()
+        request = urllib.request.Request(URL + "/api/chat", data=body, method="POST",
+                                         headers={"Content-Type": "application/json", "X-Kino-Key": KEY})
+        try:
+            with urllib.request.urlopen(request, timeout=40, context=self.ctx) as r:
+                plan = json.loads(json.loads(r.read())["message"]["content"])
+        except Exception as e:
+            print("understand", type(e).__name__, e, file=sys.stderr, flush=True)
+            return None
+        def strings(key, n):
+            v = plan.get(key)
+            if not isinstance(v, list):
+                return []
+            # The model sometimes puts a whole comma list into one string.
+            parts = [p.strip() for x in v for p in str(x).split(",")]
+            return [p for p in parts if p][:n]
+        kind = plan.get("kind") if plan.get("kind") in ("movie", "series") else "any"
+        return {"kind": kind, "title": str(plan.get("title") or "").strip()[:100],
+                "people": strings("people", 3), "genres": strings("genres", 3), "keywords": strings("keywords", 6)}
 
     @staticmethod
     def text_of(hit, info):

@@ -54,10 +54,15 @@ SHELVES = [("MOVIES", True), ("SERIES", True), ("MOVIES", False), ("CARTOONS", T
 
 BROWSE_TTL = 600
 SEARCH_TTL = 900
-SEARCH_CACHE_MAX = 3000
+# An answer is up to SEARCH_LIMIT hits (~250 KB in memory): a few hundred are plenty, and what is older than
+# SEARCH_TTL is dropped as new ones come in. (3000 and no sweeping of the expired grew the process to its
+# memory limit in about a day, and systemd killed it.)
+SEARCH_CACHE_MAX = 300
 FETCH_TIMEOUT = 10
 MIN_SEEDS = 2
 BROWSE_LIMIT = 100
+# Catalog lists in the app scroll without end: as many Rutor pages as that site keeps.
+MAX_BROWSE_PAGE = 60
 SEARCH_LIMIT = 200
 HASH_LOOKUPS = 20
 # Release pages read for covers and ids: at most this many a second per site, in the background.
@@ -510,12 +515,70 @@ def with_hashes(hits):
     return hits
 
 
-def browse(cat, popular):
-    jobs = [pool.submit(attempt, "RUTOR", lambda c=c: parse_rutor(*rutor_page(f"browse/0/{c}/0/{2 if popular else 0}"))) for c in CATEGORIES[cat]]
+def browse(cat, popular, page=0):
+    jobs = [pool.submit(attempt, "RUTOR", lambda c=c: parse_rutor(*rutor_page(f"browse/{page}/{c}/0/{2 if popular else 0}"))) for c in CATEGORIES[cat]]
     outcomes = [j.result() for j in jobs]
     hits = merge([h for found, _ in outcomes for h in found if h["se"] >= MIN_SEEDS])
     hits.sort(key=(lambda h: -h["se"]) if popular else (lambda h: (-h["d"], -h["se"])))
-    return hits[:BROWSE_LIMIT], [e for _, e in outcomes if e]
+    return hits[:BROWSE_LIMIT if page == 0 else BROWSE_LIMIT * 2], [e for _, e in outcomes if e]
+
+
+def stem(word):
+    word = word.lower().replace("ё", "е")
+    return word[:max(4, len(word) - 2)] if len(word) > 5 else word
+
+
+def query_words(text):
+    return [stem(w) for w in re.findall(r"[\w]+", text) if len(w) > 1]
+
+
+def title_has(title, words):
+    low = title.lower().replace("ё", "е")
+    return all(w in low for w in words)
+
+
+# Words that only say "a film": dropped before the descriptions are searched.
+FILLER = {"фильм", "фильмы", "фильмов", "кино", "сериал", "сериалы", "мультфильм", "мультики", "про", "об", "обо", "где",
+          "про", "для", "что", "как", "или", "и", "с", "со", "в", "во", "на", "о", "из", "по", "от", "film", "films", "movie", "movies", "about", "with", "the"}
+
+
+def description_search(text, plan=None):
+    """Releases whose description (cast, genre, plot) matches the query: Rutor's full-text search, declensions
+    included. With the LLM's [plan] each person, keyword and genre is asked apart and a film scores by how many
+    of them its description holds; without one the query's own words are used."""
+    if plan and plan["people"]:
+        # A name is the whole question: themes the model adds around it would only bring other films in.
+        terms = [(t, 3) for t in plan["people"]]
+    elif plan:
+        terms = [(t, 3) for t in plan["people"]] + [(t, 2) for t in plan["keywords"][:5]] + [(t, 1) for t in plan["genres"][:2]]
+    else:
+        words = [w for w in re.findall(r"[\w-]+", text) if w.lower() not in FILLER]
+        terms = [(" ".join(words), 3)] if words else []
+        terms += [(w, 1) for w in words if len(w) >= 5][:4] if len(words) > 1 else []
+    if not terms:
+        return []
+
+    def run(phrase):
+        q = urllib.parse.quote(phrase)
+        try:
+            # Category 0 = every section; parse_rutor keeps video only.
+            return merge([h for h in parse_rutor(*rutor_page(f"search/0/0/010/0/{q}"))
+                          if h["se"] >= MIN_SEEDS and VIDEO_FORMAT.search(h["t"])])
+        except Exception:
+            return []
+
+    jobs = [(w, pool.submit(run, t)) for t, w in terms]
+    score = {}
+    for w, job in jobs:
+        for h in job.result():
+            entry = score.setdefault(h["id"], [0, h])
+            entry[0] += w
+    kind = (plan or {}).get("kind", "any")
+    rows = [(n, h) for n, h in score.values() if kind == "any" or is_series(h["t"]) == (kind == "series")]
+    rows.sort(key=lambda e: (-e[0], -e[1]["se"]))
+    # A genre word alone (weight 1) matches half the catalogue: it only ranks, unless nothing else is left.
+    strong = [e for e in rows if e[0] >= 2]
+    return [h for n, h in (strong if len(strong) >= 6 else rows)[:60]]
 
 
 def search(query, cat):
@@ -533,7 +596,14 @@ def search(query, cat):
             return True
         return is_series(h["t"]) == (cat == "SERIES")
 
-    alive = [h for found, _ in outcomes for h in found if h["se"] >= MIN_SEEDS and fits(h)]
+    words = query_words(query)
+
+    def relevant(h):
+        # NNM-Club and Megapeer answer a query they cannot match with their newest releases: keep only titles
+        # that carry every word of the query (a stem of it, so «послезавтра» finds «Послезавтра» in any case).
+        return h["s"] == "RUTOR" or not words or title_has(h["t"], words)
+
+    alive = [h for found, _ in outcomes for h in found if h["se"] >= MIN_SEEDS and fits(h) and relevant(h)]
     hits = sorted(merge(with_hashes(alive)), key=lambda h: -h["se"])[:SEARCH_LIMIT]
     return hits, [e for _, e in outcomes if e]
 
@@ -566,6 +636,9 @@ class Cache:
             with self.lock:
                 # A list every source failed for is not kept: the next viewer tries again.
                 if value[0] or not value[1]:
+                    now = time.time()
+                    for k in [k for k, v in self.items.items() if now - v[0] >= self.ttl]:
+                        del self.items[k]
                     if len(self.items) >= self.limit:
                         oldest = sorted(self.items, key=lambda k: self.items[k][0])[: self.limit // 10]
                         for k in oldest:
@@ -596,6 +669,8 @@ def shelves_worker():
             try:
                 browse_cache.refresh((cat, popular), lambda: browse(cat, popular))
                 pages.add(browse_cache.items[(cat, popular)][1][0])
+                if sense is not None:
+                    sense.offer(browse_cache.items[(cat, popular)][1][0])
             except Exception as e:
                 print("shelf", cat, popular, type(e).__name__, e, file=sys.stderr, flush=True)
         time.sleep(BROWSE_TTL - 60)
@@ -672,7 +747,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, json.dumps({"pages": store.count(), "queued": len(pages.items), "today": stats.view()}).encode())
         if url.path == "/browse":
             popular = query.get("popular", ["0"])[0] == "1"
-            hits, errors = browse_cache.get((cat, popular), lambda: browse(cat, popular))
+            page = max(0, min(int(query.get("page", ["0"])[0] or 0), MAX_BROWSE_PAGE)) if query.get("page", ["0"])[0].isdigit() else 0
+            hits, errors = browse_cache.get((cat, popular) if page == 0 else (cat, popular, page), lambda: browse(cat, popular, page))
         elif url.path in ("/similar", "/meaning"):
             return self.meaning(url.path, query)
         elif url.path == "/search":
@@ -690,11 +766,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, body)
 
     def meaning(self, path, query):
-        """Similar films (?page=&t=) or search by description (?q=): only with kinosense on."""
-        if sense is None:
-            return self.send(404, b'{"error":"no meaning here"}')
+        """Similar films (?page=&t=) or search by description (?q=): descriptions on Rutor plus kinosense's vectors."""
         try:
             if path == "/similar":
+                if sense is None:
+                    return self.send(404, b'{"error":"no meaning here"}')
                 page = query.get("page", [""])[0]
                 if not page.startswith(("http://", "https://")):
                     return self.send(400, b'{"error":"bad page"}')
@@ -705,10 +781,11 @@ class Handler(BaseHTTPRequestHandler):
                 text = " ".join(query.get("q", [""])[0].split())[:200]
                 if len(text) < 3:
                     return self.send(400, b'{"error":"short query"}')
-                hits = sense.meaning(text)
+                hits = meaning_search(text)
         except Exception as e:  # the LLM box is away: the app shows nothing new, everything else works
             print("meaning", type(e).__name__, e, file=sys.stderr, flush=True)
             return self.send(503, b'{"error":"meaning unavailable"}')
+        pages.add(hits[:40])
         body = answer(hits, [], "")
         stats.add(len(body), False)
         return self.send(200, body)
@@ -722,6 +799,83 @@ class Handler(BaseHTTPRequestHandler):
 
 
 sense = None
+meaning_cache = Cache(SEARCH_TTL, 200)
+
+
+def meaning_search(text):
+    """Description hits (cast, genre words) and vector hits merged: films in both first, then Rutor's, then the vectors'."""
+    def build():
+        plan = None
+        try:
+            plan = sense.understand(text) if sense is not None else None
+        except Exception:
+            plan = None
+        try:
+            by_text = description_search(text, plan)
+        except Exception as e:
+            print("describe", type(e).__name__, e, file=sys.stderr, flush=True)
+            by_text = []
+        try:
+            # The vectors are asked with the keywords too: «про людей со сверхспособностями» alone is far from «мутанты, комикс».
+            by_sense = sense.meaning(text + (". " + ", ".join(plan["keywords"] + plan["genres"]) if plan and not plan["people"] else "")) if sense is not None else []
+        except Exception as e:
+            print("sense", type(e).__name__, e, file=sys.stderr, flush=True)
+            by_sense = []
+            if not by_text:
+                raise
+        key = lambda h: re.sub(r"\s*[(\[].*$", "", h["t"]).lower()
+        titles_sense = {key(h) for h in by_sense}
+        titles_text = {key(h) for h in by_text}
+        candidates = {}
+        for h in by_text + by_sense:
+            candidates.setdefault(h["id"], h)
+        # A title the model recognised in the query («Матрицв» -> Матрица): its releases lead.
+        named = []
+        if plan and plan["title"]:
+            try:
+                named = [h for h in search(plan["title"], "ALL")[0] if title_has(h["t"], query_words(plan["title"]))][:10]
+            except Exception:
+                named = []
+        # Read each candidate's genres and plot: a film whose own text holds the asked words ranks above one that
+        # only sat near them in the vectors.
+        for h in ([] if not named else named):
+            candidates.setdefault(h["id"], h)
+        infos = store.get([h["p"] for h in candidates.values()])
+        terms = []
+        if plan:
+            terms = [(stem(w), 2.0) for t in plan["keywords"] for w in re.findall(r"[\w-]+", t) if len(w) > 3]
+            terms += [(stem(w), 3.0) for t in plan["people"] for w in re.findall(r"[\w-]+", t) if len(w) > 2]
+        genre_names = {g.lower().replace("ё", "е")[:5] for g in (plan["genres"] if plan else [])}
+        named_ids = {h["id"] for h in named}
+
+        def score(h):
+            info = infos.get(h["p"]) or {}
+            body = ((info.get("story") or "") + " " + h["t"]).lower().replace("ё", "е")
+            points = sum(w for t, w in terms if t in body)
+            genre = (info.get("genre") or "").lower().replace("ё", "е")
+            points += 2.5 * sum(1 for g in genre_names if g in genre)
+            if h["id"] in named_ids:
+                points += 100
+            if key(h) in titles_sense and key(h) in titles_text:
+                points += 4
+            elif key(h) in titles_text:
+                points += 1.5
+            return points + min(h["se"], 200) / 400
+
+        for h in named:
+            candidates.setdefault(h["id"], h)
+        ranked = sorted(candidates.values(), key=score, reverse=True)
+        # What nothing but the vectors vouches for (score under 1.5) is dropped when enough better films are there.
+        good = [h for h in ranked if score(h) >= 1.5]
+        ranked = good if len(good) >= 8 else ranked
+        seen, out = set(), []
+        for h in ranked:
+            if key(h) in seen:
+                continue
+            seen.add(key(h))
+            out.append(h)
+        return out[:40], []
+    return meaning_cache.get(text.lower(), build)[0]
 
 
 def main():
