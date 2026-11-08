@@ -21,8 +21,8 @@ android {
         // Android 7.0: 2015–2016 Android TVs (Sony, Philips) never got a newer version.
         minSdk = 24
         targetSdk = 36
-        versionCode = 42
-        versionName = "2.8.5.5"
+        versionCode = 43
+        versionName = "2.8.5.8"
         buildConfigField("String", "GDRIVE_CLIENT_ID", "\"${google.getProperty("clientId", "")}\"")
         buildConfigField("String", "GDRIVE_CLIENT_SECRET", "\"${google.getProperty("clientSecret", "")}\"")
     }
