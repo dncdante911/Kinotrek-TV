@@ -73,7 +73,8 @@ IMAGE_HOSTS = ("fastpic.org", "fastpic.ru", "lostpix.com", "imageban.ru", "ibb.c
                "hostingkartinok.com", "nnmstatic.win", "aniliberty.top", "anilibria.top", "image.tmdb.org",
                "kinopoiskapiunofficial.tech")
 IMAGE_MAX_BYTES = 8_000_000
-IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 480, 360
+# Posters ask for ~360; a still shown full screen asks for more: up to 1280 (a JPEG of ~150 KB), no further.
+IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 1280, 360
 # A screen of cards asks for a poster each.
 IMAGE_RATE_PER_MINUTE = 240
 
@@ -86,7 +87,7 @@ STREAM_SETTLE = 0.12
 STREAM_IDLE = 90
 STREAM_BUFFER = 1_000_000
 STREAMS_PER_VIEWER = 48
-STREAMS_MAX = 600
+STREAMS_MAX = 900
 STREAM_OPENS_PER_MINUTE = 300
 
 SECRET = os.environ["RELAY_SECRET"].encode()
@@ -99,8 +100,14 @@ TMDB_IMAGE = "https://image.tmdb.org/t/p/w1280"
 # Covers for releases whose page has none (some Megapeer and Rutor pages): TMDB's poster, else Kinopoisk's.
 TMDB_POSTER = "https://image.tmdb.org/t/p/w500"
 KP_POSTER = re.compile(r"^https://kinopoiskapiunofficial\.tech/images/posters/[a-z]+/\d+\.jpg$")
-RATINGS_TTL = 3 * 24 * 3600
+# A rating moves slowly: a complete answer is kept for a month (and on disk, so a restart does not cost the services'
+# daily quotas again: OMDb's free key gives 1000 and Kinopoisk's 500 a day, which a restart of an empty cache burns).
+# An answer that lacks what a service owed (its quota ran out, it did not answer) or holds no rating is kept briefly.
+RATINGS_TTL = 30 * 24 * 3600
+RATINGS_PARTIAL_TTL = 2 * 3600
 RATINGS_EMPTY_TTL = 6 * 3600
+# After a service says its quota is spent it is not asked again for this long (it is probed now and then).
+QUOTA_PAUSE = 3600
 RATINGS_MAX = 100_000
 RATINGS_RATE_PER_MINUTE = 240
 IMDB_ID = re.compile(r"^tt\d{6,10}$")
@@ -157,6 +164,14 @@ class RateLimit:
             return True
 
 
+# Viewers behind one address (mobile operators and many ISPs put hundreds of people on one) must not use up each other's
+# limits: an app sends a random id of its installation (X-Relay-Client) and its limits are its own; the address itself
+# gets a ceiling many times higher. An app without the id is counted by its address, as before.
+CLIENT_ID = re.compile(r"^[0-9a-f]{16,40}$")
+ADDRESS_CEILING_PER_MINUTE = 6_000
+STREAMS_PER_ADDRESS = 400
+ip_guard = RateLimit(ADDRESS_CEILING_PER_MINUTE)
+
 limits = RateLimit(RATE_PER_MINUTE)
 image_limits = RateLimit(IMAGE_RATE_PER_MINUTE)
 stream_limits = RateLimit(STREAM_OPENS_PER_MINUTE)
@@ -199,33 +214,77 @@ def number(text):
 
 
 class RatingsCache:
-    def __init__(self):
+    """Answers by film, with their own lifetime; appended to a file, so that a restart keeps them."""
+
+    def __init__(self, path=None):
         self.items = {}
         self.lock = threading.Lock()
+        self.path = path
+        if path:
+            self.load()
+
+    def load(self):
+        now = time.time()
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        key, stored, ttl, body = json.loads(line)
+                    except ValueError:
+                        continue
+                    if now - stored < ttl:
+                        self.items[key] = (stored, body.encode("utf-8"), ttl)
+        except OSError:
+            return
+        # Compact: the file is rewritten with what is still fresh.
+        try:
+            with open(self.path, "w", encoding="utf-8") as fh:
+                for key, (stored, body, ttl) in self.items.items():
+                    fh.write(json.dumps([key, stored, ttl, body.decode("utf-8")], ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     def get(self, key):
         with self.lock:
             entry = self.items.get(key)
         if not entry:
             return None
-        stored, body, empty = entry
-        return body if time.time() - stored < (RATINGS_EMPTY_TTL if empty else RATINGS_TTL) else None
+        stored, body, ttl = entry
+        return body if time.time() - stored < ttl else None
 
-    def put(self, key, body, empty):
+    def put(self, key, body, ttl):
         with self.lock:
             if len(self.items) >= RATINGS_MAX:
                 for old in sorted(self.items, key=lambda k: self.items[k][0])[:RATINGS_MAX // 10]:
                     del self.items[old]
-            self.items[key] = (time.time(), body, empty)
+            now = time.time()
+            self.items[key] = (now, body, ttl)
+            if self.path and ttl >= RATINGS_TTL // 2:
+                try:
+                    with open(self.path, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps([key, now, ttl, body.decode("utf-8")], ensure_ascii=False) + "\n")
+                except OSError:
+                    pass
 
 
-ratings_cache = RatingsCache()
+ratings_cache = RatingsCache(os.environ.get("RELAY_RATINGS_FILE", "/var/lib/kinorelay/ratings.jsonl"))
+quota_until = {"omdb": 0.0, "kp": 0.0}
+
+
+def quota_spent(service, text):
+    """A service whose answer says its quota is spent is left alone for QUOTA_PAUSE."""
+    if re.search(r"limit|quota", str(text or ""), re.I):
+        quota_until[service] = time.time() + QUOTA_PAUSE
+        return True
+    return False
 
 
 def film_ratings(imdb, kp):
-    """Asks the services that have a key; returns (ratings dict, whether any service answered)."""
-    result, answered = {}, False
-    if KP_KEY and (kp or imdb):
+    """Asks the services that have a key; returns (ratings dict, whether any answered, whether every asked one did)."""
+    result, answered, complete = {}, False, True
+    if KP_KEY and (kp or imdb) and time.time() < quota_until["kp"]:
+        complete = False
+    elif KP_KEY and (kp or imdb):
         headers = {"X-API-KEY": KP_KEY}
         if kp:
             film = fetch_json(f"https://kinopoiskapiunofficial.tech/api/v2.2/films/{kp}", headers)
@@ -233,6 +292,10 @@ def film_ratings(imdb, kp):
             found = fetch_json(f"https://kinopoiskapiunofficial.tech/api/v2.2/films?imdbId={imdb}", headers)
             items = (found or {}).get("items") or []
             film = items[0] if items else ({} if found is not None else None)
+        if film is not None and quota_spent("kp", film.get("message")):
+            film, complete = None, False
+        elif film is None:
+            complete = False
         if film is not None:
             answered = True
             value = number(film.get("ratingKinopoisk"))
@@ -246,8 +309,14 @@ def film_ratings(imdb, kp):
                 result["imdb"] = [value, int(film.get("ratingImdbVoteCount") or 0)]
             if not imdb and IMDB_ID.match(str(film.get("imdbId") or "")):
                 imdb = film["imdbId"]
-    if OMDB_KEY and imdb:
+    if OMDB_KEY and imdb and time.time() < quota_until["omdb"]:
+        complete = False
+    elif OMDB_KEY and imdb:
         film = fetch_json(f"https://www.omdbapi.com/?i={imdb}&apikey={urllib.parse.quote(OMDB_KEY)}")
+        if film is not None and film.get("Response") != "True" and quota_spent("omdb", film.get("Error")):
+            film, complete = None, False
+        elif film is None:
+            complete = False
         if film is not None and film.get("Response") == "True":
             answered = True
             value = number(film.get("imdbRating"))
@@ -267,6 +336,12 @@ def film_ratings(imdb, kp):
         found = fetch_json(f"https://api.themoviedb.org/3/find/{imdb}?api_key={urllib.parse.quote(TMDB_KEY)}&external_source=imdb_id")
         if found is not None:
             answered = True
+            # TMDB's own score: a rating that is there even when the IMDb and Kinopoisk quotas are spent.
+            for kind in ("movie_results", "tv_results"):
+                item = next((i for i in found.get(kind) or [] if number(i.get("vote_average")) and int(i.get("vote_count") or 0) > 0), None)
+                if item:
+                    result["tm"] = [round(number(item["vote_average"]), 1), int(item.get("vote_count") or 0)]
+                    break
             for kind in ("movie_results", "tv_results"):
                 poster = next((item.get("poster_path") for item in found.get(kind) or [] if item.get("poster_path")), None)
                 if poster and re.match(r"^/[A-Za-z0-9_]+\.(?:jpg|png|webp)$", poster):
@@ -277,7 +352,7 @@ def film_ratings(imdb, kp):
                 if path and re.match(r"^/[A-Za-z0-9_]+\.(?:jpg|png|webp)$", path):
                     result["bd"] = TMDB_IMAGE + path
                     break
-    return result, answered
+    return result, answered, complete
 
 
 def requote(url):
@@ -476,6 +551,9 @@ class Streams:
                 raise ValueError("relay busy")
             if sum(1 for s in self.items.values() if s.viewer == viewer) >= STREAMS_PER_VIEWER:
                 raise ValueError("too many streams")
+            address = viewer.split("|", 1)[0]
+            if sum(1 for s in self.items.values() if s.viewer.split("|", 1)[0] == address) >= STREAMS_PER_ADDRESS:
+                raise ValueError("too many streams")
         address = stream_address(host)
         if address is None:
             raise ValueError("host not allowed")
@@ -519,6 +597,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def viewer(self):
+        """Who is asking: the address and, when the app sent one, its installation's id."""
+        client = self.headers.get("X-Relay-Client", "")
+        address = self.client_address[0]
+        return f"{address}|{client}" if CLIENT_ID.match(client) else address
+
+    def permit(self, limit):
+        """True when this viewer is inside [limit] and its address inside the (much higher) ceiling."""
+        return ip_guard.allow(self.client_address[0]) and limit.allow(self.viewer())
+
     def fail(self, code, reason):
         body = reason.encode()
         self.send_response(code)
@@ -550,7 +638,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search", "/x/similar", "/x/meaning"):
+        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search", "/x/similar", "/x/meaning", "/x/ratings", "/x/rate", "/x/unrate", "/x/ratesync", "/x/film"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
@@ -569,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.ratings(query)
         if url.path.startswith("/x/"):
             return self.index(url)
-        if not limits.allow(self.client_address[0]):
+        if not self.permit(limits):
             return self.fail(429, "too many requests")
         target = query.get("u", [""])[0]
         parts = urllib.parse.urlsplit(target)
@@ -636,10 +724,10 @@ class Handler(BaseHTTPRequestHandler):
             host = query.get("h", [""])[0].lower()
             if not stream_host_allowed(host):
                 return self.fail(400, "host not allowed")
-            if not stream_limits.allow(self.client_address[0]):
+            if not self.permit(stream_limits):
                 return self.fail(429, "too many requests")
             try:
-                token = streams.open(host, self.client_address[0])
+                token = streams.open(host, self.viewer())
             except ValueError as e:
                 return self.fail(400 if "allowed" in str(e) else 429, str(e))
             except OSError as e:
@@ -669,7 +757,7 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= STATS_MAX:
             return self.fail(400, "bad length")
         body = self.rfile.read(length)
-        if not stats_limits.allow(self.client_address[0]):
+        if not self.permit(stats_limits):
             return self.fail(429, "too many requests")
         request = urllib.request.Request(STATS_URL + path, data=body, method="POST", headers={"Content-Type": "application/json"})
         try:
@@ -691,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
         if not 0 < length <= REPORT_MAX:
             return self.fail(400, "bad length")
         body = self.rfile.read(length)
-        if not report_limits.allow(self.client_address[0]):
+        if not self.permit(report_limits):
             return self.fail(429, "too many reports")
         try:
             save_report(body)
@@ -736,11 +824,14 @@ class Handler(BaseHTTPRequestHandler):
             chunk = int(self.headers.get("X-Relay-Chunk", "0")) or 8_000
         except ValueError:
             return self.fail(400, "bad request")
-        if not index_limits.allow(self.client_address[0]):
+        if not self.permit(index_limits):
             return self.fail(429, "too many requests")
         target = INDEX_URL + url.path[2:] + ("?" + url.query if url.query else "")
         try:
-            with urllib.request.urlopen(target, timeout=25) as response:
+            headers = {"X-Client-IP": self.client_address[0]}
+            if self.headers.get("X-Rate-Key"):
+                headers["X-Rate-Key"] = self.headers["X-Rate-Key"]
+            with urllib.request.urlopen(urllib.request.Request(target, headers=headers), timeout=25) as response:
                 status, body = response.status, response.read(INDEX_MAX_BYTES)
         except urllib.error.HTTPError as e:
             status, body = e.code, e.read(INDEX_MAX_BYTES)
@@ -762,18 +853,26 @@ class Handler(BaseHTTPRequestHandler):
         key = f"{imdb}|{kp}"
         body = ratings_cache.get(key)
         if body is None:
-            if not ratings_limits.allow(self.client_address[0]):
+            if not self.permit(ratings_limits):
                 return self.fail(429, "too many requests")
-            result, answered = film_ratings(imdb, kp)
+            result, answered, complete = film_ratings(imdb, kp)
             body = json.dumps(result).encode()
-            # A service that did not answer is asked again on the next request, not in hours.
-            if answered or not (OMDB_KEY or KP_KEY):
-                ratings_cache.put(key, body, empty=not result)
+            has_score = any(k in result for k in ("imdb", "kp", "rt", "mc", "tm"))
+            # Complete and holding a score: for a month. Anything less (a quota spent, a service silent, no score at all)
+            # only for a while, so the numbers come once the services are back, not days later.
+            if (answered or not (OMDB_KEY or KP_KEY)) and complete and has_score:
+                ttl = RATINGS_TTL
+            elif has_score or answered:
+                ttl = RATINGS_PARTIAL_TTL if has_score else RATINGS_EMPTY_TTL
+            else:
+                ttl = 0
+            if ttl:
+                ratings_cache.put(key, body, ttl)
         return self.send_split(body, chunk, 200, "application/json")
 
     def image(self, query):
         """A poster from an image host, scaled to the card; redirects are followed here, each checked."""
-        if not image_limits.allow(self.client_address[0]):
+        if not self.permit(image_limits):
             return self.fail(429, "too many requests")
         try:
             chunk = int(self.headers.get("X-Relay-Chunk", "0")) or 8_000

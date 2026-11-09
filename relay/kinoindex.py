@@ -18,6 +18,7 @@ environment: KINOINDEX_BIND (host:port, default 127.0.0.1:8446), KINOINDEX_DB (S
 KINOINDEX_STANDBY=1 (no background rebuilding of the home rows: lists are built only when asked).
 """
 
+import hmac
 import html
 import json
 import os
@@ -32,6 +33,8 @@ import urllib.request
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import kinorate
 
 BIND = os.environ.get("KINOINDEX_BIND", "127.0.0.1:8446")
 DB_PATH = os.environ.get("KINOINDEX_DB", "/var/lib/kinoindex/index.db")
@@ -676,9 +679,17 @@ def shelves_worker():
         time.sleep(BROWSE_TTL - 60)
 
 
+def film_key(info):
+    """The film's id the community ratings are kept under: IMDb first, else Kinopoisk."""
+    if info.get("imdb"):
+        return info["imdb"]
+    return "kp" + info["kp"] if info.get("kp") else None
+
+
 def enrich(hits):
     """Each hit with what its page told (cover, countries, ids) when the page has been read."""
     known = store.get([h["p"] for h in hits])
+    community = rates.aggregate([k for k in (film_key(i) for i in known.values()) if k]) if rates is not None else {}
     out = []
     for h in hits:
         info = known.get(h["p"])
@@ -690,6 +701,10 @@ def enrich(hits):
             # Read but without a cover: the app should not read the page again for one.
             if not info.get("poster"):
                 h["po"] = ""
+            # The community's rating, only once enough viewers have voted.
+            vote = community.get(film_key(info) or "")
+            if vote and vote[0] >= kinorate.MIN_VOTES:
+                h["kr"] = [vote[0], vote[1]]
         out.append(h)
     return out
 
@@ -743,6 +758,10 @@ class Handler(BaseHTTPRequestHandler):
         etag = query.get("e", [""])[0]
         if cat not in CATEGORIES:
             return self.send(400, b'{"error":"bad category"}')
+        if url.path in ("/ratings", "/rate", "/unrate", "/ratesync"):
+            return self.rating(url.path, query)
+        if url.path == "/film":
+            return self.film(query)
         if url.path == "/health":
             return self.send(200, json.dumps({"pages": store.count(), "queued": len(pages.items), "today": stats.view()}).encode())
         if url.path == "/browse":
@@ -764,6 +783,54 @@ class Handler(BaseHTTPRequestHandler):
         body = answer(hits, errors, etag)
         stats.add(len(body), body.startswith(b'{"v": 1, "e"'))
         return self.send(200, body)
+
+    def film(self, query):
+        """What the index read on a release page (?p=<page url>): cover, genres, countries, film ids and the story.
+        The app falls back to it when it cannot read the page itself, so a page still has its description and ratings."""
+        page = query.get("p", [""])[0]
+        if not page.startswith(("http://", "https://")) or len(page) > 300:
+            return self.send(400, b'{"error":"bad page"}')
+        info = store.get([page]).get(page)
+        if info is None or not (info.get("story") or info.get("genre") or info.get("imdb") or info.get("kp")):
+            return self.send(404, b'{"error":"page not read yet"}')
+        body = {"v": 1, "po": info.get("poster") or "", "c": info.get("country") or "", "i": info.get("imdb") or "",
+                "k": info.get("kp") or "", "g": info.get("genre") or "", "s": (info.get("story") or "")[:1500]}
+        return self.send(200, json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode())
+
+    def rating(self, path, query):
+        """Community ratings: /ratings?f=<ids>, /rate?f=&k=&s=&t=, /unrate?k=, /ratesync?since= (the other server only)."""
+        if rates is None:
+            return self.send(404, b'{"error":"no ratings here"}')
+        ip = self.headers.get("X-Client-IP", "") or self.client_address[0]
+
+        def first(name):
+            return query.get(name, [None])[0]
+
+        def reply(body, status=200):
+            return self.send(status, json.dumps(body, separators=(",", ":")).encode())
+
+        try:
+            if path == "/ratings":
+                films = [f for f in (first("f") or "").split(",") if f][:kinorate.MAX_FILMS_PER_ASK]
+                return reply({"v": 1, "r": rates.aggregate(films)})
+            if path == "/rate":
+                film, token = first("f") or "", first("k") or ""
+                stars = int(first("s")) if first("s") not in (None, "") else None
+                thumb = int(first("t")) if first("t") not in (None, "") else None
+                result = rates.vote(ip, film, token, stars, thumb)
+                if result is None:
+                    return reply({"error": "slow down"}, 429)
+                return reply({"v": 1, "r": {film: result}})
+            if path == "/unrate":
+                count = rates.forget(ip, first("k") or "")
+                return reply({"error": "slow down"}, 429) if count is None else reply({"v": 1, "deleted": count})
+            # /ratesync: only with the shared key (the other server's pull), never from an app
+            key = os.environ.get("KINORATE_SYNC_KEY", "")
+            if not key or not hmac.compare_digest((self.headers.get("X-Rate-Key", "")).encode(), key.encode()):
+                return reply({"error": "forbidden"}, 403)
+            return reply({"v": 1, "rows": rates.changes(int(first("since") or 0))})
+        except (ValueError, TypeError):
+            return reply({"error": "bad request"}, 400)
 
     def meaning(self, path, query):
         """Similar films (?page=&t=) or search by description (?q=): descriptions on Rutor plus kinosense's vectors."""
@@ -799,6 +866,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 sense = None
+rates = None
 meaning_cache = Cache(SEARCH_TTL, 200)
 
 
@@ -879,8 +947,10 @@ def meaning_search(text):
 
 
 def main():
-    global store, sense
+    global store, sense, rates
     store = Store(DB_PATH)
+    rates = kinorate.Rates(os.environ.get("KINORATE_DB", os.path.join(os.path.dirname(DB_PATH) or ".", "rates.db")))
+    threading.Thread(target=rates.sync_worker, daemon=True).start()
     try:
         import kinosense
         if kinosense.ENABLED:
