@@ -37,8 +37,20 @@ FFmpeg собирается без `--enable-gpl` и `--enable-nonfree`, тол�
 | [Free-TV/IPTV](https://github.com/Free-TV/IPTV) | каталог бесплатных эфирных телеканалов | условия проекта; потоки принадлежат вещателям |
 | [epg.pw](https://epg.pw) | программа передач (XMLTV) | условия сервиса |
 | [YouTube](https://www.youtube.com) | трейлеры: встроенный плеер YouTube (IFrame API) | [Условия использования YouTube](https://www.youtube.com/t/terms) |
-| Rutor, NNM-Club, Megapeer, RuTracker | поиск раздач и описания | условия сайтов |
+| Rutor, TorrentKino, Megapeer, RuTracker, NNM-Club | поиск раздач и описания (TorrentKino, Rutor, Megapeer и NNM-Club читает сервер Кинотрека) | условия сайтов |
 | [AniLibria](https://anilibria.top) | каталог и онлайн-серии аниме | условия сервиса |
-| [TMDB](https://www.themoviedb.org) | кадры из фильмов (через сервер Кинотрека) | [условия API TMDB](https://www.themoviedb.org/api-terms-of-use); This product uses the TMDB API but is not endorsed or certified by TMDB |
+| [TMDB](https://www.themoviedb.org) | кадры из фильмов и рейтинг TMDB (через сервер Кинотрека) | [условия API TMDB](https://www.themoviedb.org/api-terms-of-use); This product uses the TMDB API but is not endorsed or certified by TMDB |
 | [OMDb API](https://www.omdbapi.com), [Kinopoisk API Unofficial](https://kinopoiskapiunofficial.tech), [Wikidata](https://www.wikidata.org) | рейтинги фильмов (через сервер Кинотрека) | условия сервисов; данные Wikidata — CC0 |
 | [GitHub Releases](https://github.com/dncdante911/Kinotrek-TV/releases) | проверка и загрузка обновлений | условия GitHub |
+| [Google Drive API](https://developers.google.com/drive) | резервная копия библиотеки в Диск пользователя (только по его выбору) | [условия API Google](https://developers.google.com/terms) |
+| ipinfo.io, speed.cloudflare.com, proof.ovh.net | проверка скорости интернета | условия сервисов |
+
+## Работают на сервере Кинотрека
+
+В приложение не входят и не распространяются с ним.
+
+| Компонент | Для чего | Лицензия |
+|---|---|---|
+| [Ollama](https://github.com/ollama/ollama) | запуск языковых моделей для «Похожих» и поиска по описанию | MIT |
+| [BGE-M3](https://huggingface.co/BAAI/bge-m3) | смысловое сравнение описаний | MIT |
+| [Gemma](https://ai.google.dev/gemma) | разбор поисковых фраз | [Gemma Terms of Use](https://ai.google.dev/gemma/terms) |
