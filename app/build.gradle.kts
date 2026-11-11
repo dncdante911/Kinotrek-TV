@@ -22,8 +22,8 @@ android {
         minSdk = 24
         //noinspection OldTargetApi
         targetSdk = 36
-        versionCode = 46
-        versionName = "2.8.6.5"
+        versionCode = 47
+        versionName = "2.8.6.7"
         buildConfigField("String", "GDRIVE_CLIENT_ID", "\"${google.getProperty("clientId", "")}\"")
         buildConfigField("String", "GDRIVE_CLIENT_SECRET", "\"${google.getProperty("clientSecret", "")}\"")
     }
