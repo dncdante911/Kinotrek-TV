@@ -36,6 +36,11 @@ WORK_EVERY_S = 30
 # The matrix the queries use is rebuilt from memory at most this often; new vectors wait that long at worst.
 MATRIX_EVERY_S = 60
 STALE_EVERY_S = 300
+# A viewer's search waits for the model at most this long (the relay gives the whole answer 25 s); after two
+# failures in a row the model is left alone for a while and searches go on without it, by the words of the query.
+ASK_TIMEOUT_S = 12
+REST_AFTER_FAILURES = 2
+REST_S = 300
 TITLE_NOISE = re.compile(r"\s*[(\[].*$")
 
 
@@ -57,6 +62,8 @@ class Sense:
         self.ctx = ssl.create_default_context(cafile=CA) if CA else ssl.create_default_context()
         self.ctx.check_hostname = False  # the gateway is reached by IP; its certificate is pinned through cafile
         self.failures = 0
+        self.ask_failures = 0
+        self.resting_until = 0.0
         self.stale_pages = set()
         self.stale_at = 0.0
 
@@ -73,11 +80,25 @@ class Sense:
 
     # ---- embeddings ----
 
-    def embed(self, texts):
+    def _asked(self, ok):
+        """Keeps count of the model's answers to viewers' questions; two failures in a row start a rest."""
+        if ok:
+            self.ask_failures = 0
+            return
+        self.ask_failures += 1
+        if self.ask_failures >= REST_AFTER_FAILURES:
+            self.resting_until = time.time() + REST_S
+            self.ask_failures = 0
+            print("sense: the model does not answer, resting", REST_S, "s", file=sys.stderr, flush=True)
+
+    def resting(self):
+        return time.time() < self.resting_until
+
+    def embed(self, texts, timeout=60):
         body = json.dumps({"model": MODEL, "input": texts}).encode()
         request = urllib.request.Request(URL + "/api/embed", data=body, method="POST",
                                          headers={"Content-Type": "application/json", "X-Kino-Key": KEY})
-        with urllib.request.urlopen(request, timeout=60, context=self.ctx) as r:
+        with urllib.request.urlopen(request, timeout=timeout, context=self.ctx) as r:
             vectors = json.loads(r.read())["embeddings"]
         out = []
         for v in vectors:
@@ -102,11 +123,17 @@ class Sense:
                            "messages": [{"role": "system", "content": self.PLAN_PROMPT}, {"role": "user", "content": text}]}).encode()
         request = urllib.request.Request(URL + "/api/chat", data=body, method="POST",
                                          headers={"Content-Type": "application/json", "X-Kino-Key": KEY})
+        if self.resting():
+            return None
         try:
-            with urllib.request.urlopen(request, timeout=40, context=self.ctx) as r:
+            with urllib.request.urlopen(request, timeout=ASK_TIMEOUT_S, context=self.ctx) as r:
                 plan = json.loads(json.loads(r.read())["message"]["content"])
+            self._asked(True)
         except Exception as e:
+            self._asked(False)
             print("understand", type(e).__name__, e, file=sys.stderr, flush=True)
+            return None
+        if not isinstance(plan, dict):
             return None
         def strings(key, n):
             v = plan.get(key)
@@ -258,5 +285,12 @@ class Sense:
         return self._top(vec, n, SIMILAR_MIN, skip)
 
     def meaning(self, text, n=40):
-        vec = self.embed([text])[0]
+        if self.resting():
+            raise OSError("the model is resting")
+        try:
+            vec = self.embed([text], timeout=ASK_TIMEOUT_S)[0]
+            self._asked(True)
+        except Exception:
+            self._asked(False)
+            raise
         return self._top(vec, n, MEANING_MIN, set())

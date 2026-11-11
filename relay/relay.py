@@ -39,8 +39,10 @@ daily limits of the services are spent on new films only. Split like /i.
 Needs only the standard library; Pillow (python3-pil) is optional. Settings come from the
 environment: RELAY_BIND (host:port), RELAY_CERT, RELAY_KEY_FILE (TLS), RELAY_SECRET (shared app key).
 """
+import contextlib
 import gzip
 import hmac
+import shutil
 import io
 import json
 import re
@@ -71,7 +73,11 @@ PARTS_TTL = 120
 IMAGE_HOSTS = ("fastpic.org", "fastpic.ru", "lostpix.com", "imageban.ru", "ibb.co", "imgur.com",
                "radikal.ru", "pixhost.to", "imgbox.com", "postimg.cc", "geekpic.net", "youpic.su",
                "hostingkartinok.com", "nnmstatic.win", "aniliberty.top", "anilibria.top", "image.tmdb.org",
-               "kinopoiskapiunofficial.tech")
+               "kinopoiskapiunofficial.tech",
+               # TV channel logos of the public playlists (most are on imgur, the rest here).
+               "upload.wikimedia.org",
+               # Covers of TorrentKino's films.
+               "torrentkino.org")
 IMAGE_MAX_BYTES = 8_000_000
 # Posters ask for ~360; a still shown full screen asks for more: up to 1280 (a JPEG of ~150 KB), no further.
 IMAGE_WIDTH_MIN, IMAGE_WIDTH_MAX, IMAGE_WIDTH = 160, 1280, 360
@@ -106,6 +112,9 @@ KP_POSTER = re.compile(r"^https://kinopoiskapiunofficial\.tech/images/posters/[a
 RATINGS_TTL = 30 * 24 * 3600
 RATINGS_PARTIAL_TTL = 2 * 3600
 RATINGS_EMPTY_TTL = 6 * 3600
+# No service could be reached at all (the network, a timeout): not asked again for the same film for a short while,
+# so a row of cards does not hold a dozen threads on 12-second timeouts each.
+RATINGS_FAILED_TTL = 120
 # After a service says its quota is spent it is not asked again for this long (it is probed now and then).
 QUOTA_PAUSE = 3600
 RATINGS_MAX = 100_000
@@ -114,7 +123,8 @@ IMDB_ID = re.compile(r"^tt\d{6,10}$")
 
 # Kinotrek's search index (kinoindex.py) on this host: finished tracker lists for the app (GET /x/...).
 INDEX_URL = os.environ.get("KINOINDEX_URL", "http://127.0.0.1:8446")
-INDEX_RATE_PER_MINUTE = 60
+# A new device's first sync sends its library in a few dozen small requests (kinosync).
+INDEX_RATE_PER_MINUTE = 120
 INDEX_MAX_BYTES = 2_000_000
 
 # Usage statistics (kinostats.py on this host, localhost only). Without it the paths answer 404.
@@ -128,6 +138,8 @@ REPORTS_DIR = os.environ.get("RELAY_REPORTS", "/var/lib/kinorelay/reports")
 REPORT_MAX = 64_000
 REPORTS_PER_MINUTE = 6
 REPORTS_PER_DAY = 2000
+# Day folders older than this are removed when a new day starts: the disk of a small VM is not a place for years of them.
+REPORTS_KEEP_DAYS = 45
 KP_ID = re.compile(r"^\d{2,9}$")
 
 try:
@@ -187,7 +199,9 @@ def save_report(body):
     if not isinstance(data, dict):
         raise ValueError("not an object")
     folder = os.path.join(REPORTS_DIR, time.strftime("%Y-%m-%d", time.gmtime()))
-    os.makedirs(folder, mode=0o750, exist_ok=True)
+    if not os.path.isdir(folder):
+        os.makedirs(folder, mode=0o750, exist_ok=True)
+        prune_reports()
     if len(os.listdir(folder)) >= REPORTS_PER_DAY:
         raise OverflowError("enough reports today")
     data["received"] = int(time.time())
@@ -196,14 +210,63 @@ def save_report(body):
         json.dump(data, f, ensure_ascii=False, indent=1)
 
 
+def prune_reports():
+    """Removes report folders (named by their UTC day) older than REPORTS_KEEP_DAYS."""
+    oldest = time.strftime("%Y-%m-%d", time.gmtime(time.time() - REPORTS_KEEP_DAYS * 86400))
+    try:
+        for name in os.listdir(REPORTS_DIR):
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", name) and name < oldest:
+                shutil.rmtree(os.path.join(REPORTS_DIR, name), ignore_errors=True)
+    except OSError:
+        pass
+
+
 def fetch_json(url, headers=None):
-    """A rating service's JSON, or None when it cannot be had now."""
+    """A rating service's JSON object, or None when it cannot be had now. An error answer is read too: OMDb says
+    "Request limit reached!" with status 401 and Kinopoisk its quota with 402, and that is how a spent quota is told
+    from a service that is down. 404 is an answer as well: the service does not know the film ({})."""
     request = urllib.request.Request(url, headers={"User-Agent": "kinorelay", "Accept": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(request, timeout=UPSTREAM_TIMEOUT) as response:
-            return json.loads(response.read(1_000_000).decode("utf-8", "replace"))
+            data = json.loads(response.read(1_000_000).decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            data = json.loads(e.read(100_000).decode("utf-8", "replace"))
+        except (ValueError, OSError):
+            data = None
+        if e.code == 404:
+            return {}
+        if e.code in (402, 429):
+            return {"message": f"limit (http {e.code})", "Error": f"limit (http {e.code})"}
+        return data if isinstance(data, dict) and (data.get("Error") or data.get("message")) else None
     except (urllib.error.URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError, ValueError):
         return None
+    return data if isinstance(data, dict) else None
+
+
+class KeyLocks:
+    """One lock per key while somebody holds it: viewers asking for the same film at once make one set of calls."""
+
+    def __init__(self):
+        self.locks = {}
+        self.guard = threading.Lock()
+
+    @contextlib.contextmanager
+    def hold(self, key):
+        with self.guard:
+            entry = self.locks.setdefault(key, [threading.Lock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:
+                yield
+        finally:
+            with self.guard:
+                entry[1] -= 1
+                if not entry[1]:
+                    self.locks.pop(key, None)
+
+
+ratings_locks = KeyLocks()
 
 
 def number(text):
@@ -273,7 +336,7 @@ quota_until = {"omdb": 0.0, "kp": 0.0}
 
 def quota_spent(service, text):
     """A service whose answer says its quota is spent is left alone for QUOTA_PAUSE."""
-    if re.search(r"limit|quota", str(text or ""), re.I):
+    if re.search(r"limit|quota|too many", str(text or ""), re.I):
         quota_until[service] = time.time() + QUOTA_PAUSE
         return True
     return False
@@ -334,6 +397,9 @@ def film_ratings(imdb, kp):
             answered = True
     if TMDB_KEY and imdb:
         found = fetch_json(f"https://api.themoviedb.org/3/find/{imdb}?api_key={urllib.parse.quote(TMDB_KEY)}&external_source=imdb_id")
+        if found is not None and str(found.get("message", "")).startswith("limit"):
+            # TMDB asked to slow down: the still and its score are owed, the answer is not kept for long.
+            found, complete = None, False
         if found is not None:
             answered = True
             # TMDB's own score: a rating that is there even when the IMDb and Kinopoisk quotas are spent.
@@ -374,8 +440,17 @@ def public_address(host):
     return bool(infos) and all(ipaddress.ip_address(info[4][0]).is_global for info in infos)
 
 
+def port_of(parts):
+    """The port of a split URL; -1 for one that is not a number ("https://host:x/"), which no list of ports holds."""
+    try:
+        return parts.port
+    except ValueError:
+        return -1
+
+
 def shrink(body, width):
-    """The image as a JPEG at most [width] wide; as it is when Pillow is missing or cannot read it."""
+    """The image at most [width] wide, as a JPEG (a PNG when it has transparency: a channel's logo on black is not
+    the logo); as it is when Pillow is missing or cannot read it."""
     if Image is None:
         return body, None
     try:
@@ -384,6 +459,13 @@ def shrink(body, width):
         with SHRINKING, Image.open(io.BytesIO(body)) as picture:
             if picture.width * picture.height > SHRINK_MAX_PIXELS:
                 return body, None
+            clear = picture.mode in ("RGBA", "LA") or (picture.mode == "P" and "transparency" in picture.info)
+            if clear:
+                picture = picture.convert("RGBA")
+                picture.thumbnail((width, width * 3))
+                out = io.BytesIO()
+                picture.save(out, "PNG", optimize=True)
+                return out.getvalue(), "image/png"
             picture.draft("RGB", (width, width * 3))  # JPEGs decode at 1/2, 1/4, 1/8 straight away
             picture.thumbnail((width, width * 3))
             picture = ImageOps.exif_transpose(picture).convert("RGB")
@@ -401,17 +483,26 @@ SHRINK_MAX_PIXELS = 50_000_000
 class Parts:
     """Split answers waiting for the app to fetch their remaining parts."""
 
-    def __init__(self, ttl):
+    def __init__(self, ttl, max_bytes=64_000_000):
         self.ttl = ttl
+        self.max_bytes = max_bytes
         self.items = {}
         self.lock = threading.Lock()
 
     def put(self, parts):
         token = secrets.token_urlsafe(12)
         now = time.monotonic()
+        size = sum(map(len, parts))
         with self.lock:
             self.items = {k: v for k, v in self.items.items() if now - v[0] < self.ttl}
-            self.items[token] = (now, parts)
+            # A burst of big pictures must not take the process to its memory limit: the oldest waiting answers go
+            # (their viewers ask again), as dicts keep the order they were filled in.
+            total = sum(v[2] for v in self.items.values()) + size
+            for old in list(self.items):
+                if total <= self.max_bytes:
+                    break
+                total -= self.items.pop(old)[2]
+            self.items[token] = (now, parts, size)
         return token
 
     def get(self, token, n):
@@ -609,6 +700,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def fail(self, code, reason):
         body = reason.encode()
+        # Whatever of the request was not read (the body of a refused POST) must not be taken for the next request.
+        self.close_connection = True
         self.send_response(code)
         self.send_header("X-Relay-Error", reason)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -638,7 +731,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search", "/x/similar", "/x/meaning", "/x/ratings", "/x/rate", "/x/unrate", "/x/ratesync", "/x/film"):
+        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search", "/x/similar", "/x/meaning", "/x/ratings", "/x/rate", "/x/unrate", "/x/ratesync", "/x/film", "/x/magnet", "/x/sync/push", "/x/sync/pair", "/x/sync/claim", "/x/sync/forget"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
@@ -661,7 +754,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(429, "too many requests")
         target = query.get("u", [""])[0]
         parts = urllib.parse.urlsplit(target)
-        if parts.scheme != "https" or (parts.hostname or "").lower() not in ALLOWED_HOSTS or parts.port not in (None, 443):
+        if parts.scheme != "https" or (parts.hostname or "").lower() not in ALLOWED_HOSTS or port_of(parts) not in (None, 443):
             return self.fail(400, "host not allowed")
 
         headers = {name: self.headers[name] for name in FORWARDED if self.headers.get(name)}
@@ -804,10 +897,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(400, str(e))
         return self.send_part(data, [("X-Relay-Eof", "1")] if finished else [])
 
-    def send_split(self, body, chunk, status, content_type, location=None):
+    def send_split(self, body, chunk, status, content_type, location=None, level=6):
         """Gzipped and in parts of [chunk] bytes; the first part answers, the rest wait in [pending]."""
         chunk = min(max(chunk, CHUNK_MIN), CHUNK_MAX)
-        packed = gzip.compress(body, 6)
+        packed = gzip.compress(body, level)
         pieces = [packed[i:i + chunk] for i in range(0, len(packed), chunk)] or [b""]
         meta = [("X-Relay-Status", str(status)), ("X-Relay-Parts", str(len(pieces)))]
         if len(pieces) > 1:
@@ -855,20 +948,34 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             if not self.permit(ratings_limits):
                 return self.fail(429, "too many requests")
-            result, answered, complete = film_ratings(imdb, kp)
-            body = json.dumps(result).encode()
-            has_score = any(k in result for k in ("imdb", "kp", "rt", "mc", "tm"))
-            # Complete and holding a score: for a month. Anything less (a quota spent, a service silent, no score at all)
-            # only for a while, so the numbers come once the services are back, not days later.
-            if (answered or not (OMDB_KEY or KP_KEY)) and complete and has_score:
-                ttl = RATINGS_TTL
-            elif has_score or answered:
-                ttl = RATINGS_PARTIAL_TTL if has_score else RATINGS_EMPTY_TTL
-            else:
-                ttl = 0
-            if ttl:
-                ratings_cache.put(key, body, ttl)
+            # One viewer asks the services; the others who want the same film meanwhile wait and take its answer.
+            with ratings_locks.hold(key):
+                body = ratings_cache.get(key)
+                if body is None:
+                    body = self.ask_ratings(key, imdb, kp)
         return self.send_split(body, chunk, 200, "application/json")
+
+    @staticmethod
+    def ask_ratings(key, imdb, kp):
+        result, answered, complete = film_ratings(imdb, kp)
+        body = json.dumps(result).encode()
+        has_score = any(k in result for k in ("imdb", "kp", "rt", "mc", "tm"))
+        # Complete and holding a score: for a month. Anything less (a quota spent, a service silent, no score at all)
+        # only for a while, so the numbers come once the services are back, not days later.
+        if (answered or not (OMDB_KEY or KP_KEY)) and complete and has_score:
+            ttl = RATINGS_TTL
+        elif has_score or answered:
+            ttl = RATINGS_PARTIAL_TTL if has_score else RATINGS_EMPTY_TTL
+        else:
+            ttl = RATINGS_FAILED_TTL
+        ratings_cache.put(key, body, ttl)
+        # Asked by both ids and answered in full: release pages that carry only one of the two ids are the same film,
+        # and need not cost the services' quotas again.
+        if ttl == RATINGS_TTL and imdb and kp:
+            for alias in (f"{imdb}|", f"|{kp}"):
+                if ratings_cache.get(alias) is None:
+                    ratings_cache.put(alias, body, ttl)
+        return body
 
     def image(self, query):
         """A poster from an image host, scaled to the card; redirects are followed here, each checked."""
@@ -882,7 +989,7 @@ class Handler(BaseHTTPRequestHandler):
         target = requote(query.get("u", [""])[0])
         for _ in range(4):
             parts = urllib.parse.urlsplit(target)
-            if parts.scheme not in ("http", "https") or parts.port not in (None, 80, 443) \
+            if parts.scheme not in ("http", "https") or port_of(parts) not in (None, 80, 443) \
                     or not image_host_allowed(parts.hostname) or not public_address(parts.hostname):
                 return self.fail(400, "host not allowed")
             request = urllib.request.Request(target, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
@@ -912,7 +1019,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(body) > IMAGE_MAX_BYTES:
             return self.fail(502, "image too large")
         body, shrunk_type = shrink(body, width)
-        return self.send_split(body, chunk, 200, shrunk_type or content_type)
+        # A picture is compressed already: the wrapping the protocol needs, at the cheapest level.
+        return self.send_split(body, chunk, 200, shrunk_type or content_type, level=1)
 
 
 class Server(ThreadingHTTPServer):
@@ -924,6 +1032,13 @@ class Server(ThreadingHTTPServer):
     def __init__(self, address, context):
         super().__init__(address, Handler)
         self.context = context
+
+    def handle_error(self, request, client_address):
+        """A viewer who hung up mid-answer is not an error worth a traceback: the journal keeps the real ones."""
+        kind = sys.exc_info()[0]
+        if kind is not None and issubclass(kind, (OSError, ssl.SSLError)):
+            return
+        super().handle_error(request, client_address)
 
     def finish_request(self, request, client_address):
         request.settimeout(Handler.timeout)

@@ -35,6 +35,10 @@ TOKEN_VOTES_PER_DAY = 400
 SYNC_EVERY_S = 300
 # A batch must fit one 64 KB part of the relay's gzipped answer (it speaks to apps in parts; here one is enough).
 SYNC_BATCH = 600
+# Each pull starts this far before the newest vote seen from the other server. Votes are ordered by the clock of the
+# server that took them, and a vote it merged from here carries this server's time: with the clocks a little apart a
+# vote taken there could fall behind the mark and never be asked for. Merging again what is already here changes nothing.
+SYNC_OVERLAP_MS = 15 * 60 * 1000
 
 
 class Rates:
@@ -182,9 +186,13 @@ class Rates:
         context = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
         context.check_hostname = False  # reached by IP; the certificate is pinned through cafile
         failures = 0
+        more = False
         while True:
             try:
                 since = int(self._meta("peer_since", "0"))
+                if not more:
+                    since = max(0, since - SYNC_OVERLAP_MS)
+                more = False
                 request = urllib.request.Request(f"{peer}/x/ratesync?since={since}",
                                                  headers={"X-Relay-Key": secret, "X-Rate-Key": sync_key, "X-Relay-Chunk": "64000"})
                 with urllib.request.urlopen(request, timeout=40, context=context) as r:
@@ -193,9 +201,13 @@ class Rates:
                     rows = json.loads(gzip.decompress(r.read())).get("rows", [])
                 if rows:
                     self.merge(rows)
-                    self._set_meta("peer_since", max(r[4] for r in rows))
-                    if len(rows) >= SYNC_BATCH:
+                    newest = max(int(r[4]) for r in rows)
+                    # A full batch that does not move the mark would be asked for again without end.
+                    if len(rows) >= SYNC_BATCH and newest > since:
+                        self._set_meta("peer_since", newest)
+                        more = True
                         continue  # more waiting
+                    self._set_meta("peer_since", max(newest, int(self._meta("peer_since", "0"))))
                 failures = 0
             except Exception as e:
                 failures += 1

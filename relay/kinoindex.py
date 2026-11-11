@@ -35,6 +35,8 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import kinorate
+import kinosync
+import torrentkino
 
 BIND = os.environ.get("KINOINDEX_BIND", "127.0.0.1:8446")
 DB_PATH = os.environ.get("KINOINDEX_DB", "/var/lib/kinoindex/index.db")
@@ -44,7 +46,13 @@ UA = "Mozilla/5.0 (Linux; Android 11; Android TV) AppleWebKit/537.36 (KHTML, lik
 RUTOR_MIRRORS = ["https://rutor.info/", "https://rutor.is/", "https://rutor.org.in/"]
 NNM = "https://nnmclub.to/forum/"
 MEGAPEER = "https://megapeer.vip/"
-ALLOWED_HOSTS = {"rutor.info", "rutor.is", "rutor.org.in", "rutor.org", "nnmclub.to", "megapeer.vip"}
+ALLOWED_HOSTS = {"rutor.info", "rutor.is", "rutor.org.in", "rutor.org", "nnmclub.to", "megapeer.vip", "torrentkino.org"}
+# NNM-Club answers a guest's search with its newest releases whatever was asked (games, mostly): not searched any more.
+# Its release pages (in viewers' libraries) are still read.
+SEARCH_NNM = False
+# TorrentKino releases that get their info hash with the list (the best seeded), so they merge with the same torrent
+# on other sites; the others get theirs when played (/magnet).
+TK_HASH_LOOKUPS = 12
 
 # Rutor category ids, as in the app (net/SourceSearchClient.kt Category).
 CATEGORIES = {
@@ -100,7 +108,7 @@ SPACES = re.compile(r"\s+")
 IMG = re.compile(r"<img[^>]+src\s*=\s*[\"']([^\"']+)[\"']", re.I)
 FORUM_IMG = re.compile(r"<(?:var|img)\b(?=[^>]*\bpostImg\b)[^>]*?\b(?:title|src)\s*=\s*[\"']((?:https?:)?//[^\"']+)[\"']", re.I)
 LINKED_IMAGE = re.compile(r"<a[^>]+href=[\"']([^\"']+\.(?:jpe?g|png|webp))[\"'][^>]*>\s*<(?:img[^>]+src|var[^>]+title)=[\"']([^\"']+)[\"']", re.I)
-NOT_POSTER = re.compile(r"imdb|kinopoisk|/flag/|smile|rating|\.gif(\?|$)|button|banner|userbar|logo", re.I)
+NOT_POSTER = re.compile(r"imdb|kinopoisk|myshows|shikimori|world-art|/flag/|smile|rating|\.gif(\?|$)|button|banner|userbar|logo|sample|/btn", re.I)
 NNM_PROXY = re.compile(r"https?://[^\"'\s]*/forum/image\.php\?link=([^\"'\s&]+)", re.I)
 LINE_BREAK = re.compile(r"<br\s*/?>|</p>|</div>|</li>", re.I)
 STORY_FIELD = re.compile(r"^(?:Описание(?: фильма| сериала)?|О фильме|О сериале|О мультфильме|Сюжет)\s*:?\s*(.*)$", re.I)
@@ -168,14 +176,18 @@ page_pace = Polite(PAGES_PER_SECOND)
 lookup_pace = Polite(6)
 
 
-def fetch(url, timeout=FETCH_TIMEOUT):
+def fetch_bytes(url, timeout=FETCH_TIMEOUT, limit=3_000_000):
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
     if host not in ALLOWED_HOSTS:
         raise OSError("host not allowed")
     request = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "ru,en;q=0.8"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = response.read(3_000_000)
-        declared = (response.headers.get("Content-Type", "") + body[:2048].decode("latin-1")).lower()
+        return response.read(limit), response.headers.get("Content-Type", "")
+
+
+def fetch(url, timeout=FETCH_TIMEOUT):
+    body, content_type = fetch_bytes(url, timeout)
+    declared = (content_type + body[:2048].decode("latin-1")).lower()
     return body.decode("cp1251" if "windows-1251" in declared else "utf-8", "replace")
 
 
@@ -302,7 +314,8 @@ def merge(hits):
         for h in group:
             if h["s"] not in per_site or h["se"] > per_site[h["s"]]["se"]:
                 per_site[h["s"]] = h
-        best = sorted(group, key=lambda h: (h["m"] is not None, h["se"]), reverse=True)[0]
+        # The page shown for a merged torrent: a tracker's own release page before TorrentKino's film page.
+        best = sorted(group, key=lambda h: (h["m"] is not None, h["s"] != torrentkino.SOURCE, h["se"]), reverse=True)[0]
         newest = max(group, key=lambda h: h["d"])
         out.append(dict(best, id=key, se=sum(h["se"] for h in per_site.values()), pe=sum(h["pe"] for h in per_site.values()),
                         z=best["z"] or next((h["z"] for h in group if h["z"]), ""), d=newest["d"], dl=newest["dl"], n=len(per_site)))
@@ -436,13 +449,32 @@ class Store:
 store = None
 
 
+# Pages that could not be read (removed, the site down): page -> (failures, not before). Each failure doubles the
+# wait, from ten minutes to a day; otherwise a page that is gone was asked for again with every list that named it.
+page_failures = {}
+page_failures_lock = threading.Lock()
+
+
+def page_resting(page):
+    with page_failures_lock:
+        entry = page_failures.get(page)
+    return bool(entry) and time.time() < entry[1]
+
+
 def read_page(page, source, pace=None):
     host = (urllib.parse.urlsplit(page).hostname or "").lower()
     (pace or page_pace).wait(host)
     try:
         info = parse_page(fetch(page), page, source)
     except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+        with page_failures_lock:
+            if len(page_failures) > 20_000:
+                page_failures.clear()
+            failures = page_failures.get(page, (0, 0))[0] + 1
+            page_failures[page] = (failures, time.time() + min(600 * 2 ** (failures - 1), 86_400))
         return None
+    with page_failures_lock:
+        page_failures.pop(page, None)
     store.put(page, info)
     return info
 
@@ -457,16 +489,22 @@ class PageQueue:
 
     def add(self, hits):
         known = store.get([h["p"] for h in hits])
+        fresh = []
         with self.cond:
             for h in hits:
                 # Read, and after genres were added (NULL genre: read before, worth one more visit).
                 done = h["p"] in known and known[h["p"]].get("genre") is not None and (sense is None or known[h["p"]].get("story") is not None)
-                if done or h["p"] in self.waiting:
+                # TorrentKino's releases share their film's page: its facts come with the list, there is nothing to read.
+                if done or h["p"] in self.waiting or page_resting(h["p"]) or h["s"] == torrentkino.SOURCE:
                     continue
-                if len(self.items) >= PAGE_QUEUE_MAX:
-                    break
-                self.items.append((h["p"], h["s"]))
+                fresh.append((h["p"], h["s"]))
                 self.waiting.add(h["p"])
+            # What a viewer is looking at now goes ahead of everything queued earlier (it used to wait behind up to
+            # 5000 pages, over an hour at a page a second); when the queue is full, what waited longest is let go.
+            self.items[0:0] = fresh
+            for page, _ in self.items[PAGE_QUEUE_MAX:]:
+                self.waiting.discard(page)
+            del self.items[PAGE_QUEUE_MAX:]
             self.cond.notify_all()
 
     def take(self):
@@ -504,8 +542,29 @@ def attempt(source, job):
 
 
 def with_hashes(hits):
-    """NNM-Club and Megapeer rows carry no magnet: the best seeded get theirs from the release page (read once, kept)."""
-    missing = sorted((h for h in hits if not h["h"]), key=lambda h: -h["se"])[:HASH_LOOKUPS]
+    """NNM-Club and Megapeer rows carry no magnet: the best seeded get theirs from the release page (read once, kept).
+    TorrentKino's best seeded get theirs from their .torrent files."""
+    tk_missing = sorted((h for h in hits if not h["h"] and h["s"] == torrentkino.SOURCE), key=lambda h: -h["se"])[:TK_HASH_LOOKUPS]
+
+    def tk_magnet(h):
+        try:
+            return kino.magnet(h["p"], h.get("_tp"))
+        except Exception:
+            return None
+
+    # Side by side with the other sites' lookups below: different hosts, each with its own pace.
+    tk_jobs = [(h, pool.submit(tk_magnet, h)) for h in tk_missing]
+    try:
+        return _tracker_hashes(hits)
+    finally:
+        for h, job in tk_jobs:
+            magnet = job.result()
+            if magnet:
+                h["m"], h["h"] = magnet, hash_of(magnet)
+
+
+def _tracker_hashes(hits):
+    missing = sorted((h for h in hits if not h["h"] and h["s"] != torrentkino.SOURCE), key=lambda h: -h["se"])[:HASH_LOOKUPS]
     known = store.get([h["p"] for h in missing])
     unknown = [h for h in missing if h["p"] not in known]
     for h, info in zip(unknown, pool.map(lambda h: read_page(h["p"], h["s"], lookup_pace), unknown)):
@@ -589,17 +648,18 @@ def search(query, cat):
     cp1251 = urllib.parse.quote(query.encode("cp1251", "ignore"))
     rutor_cats = [0] if cat == "ALL" else CATEGORIES[cat]
     jobs = [pool.submit(attempt, "RUTOR", lambda c=c: parse_rutor(*rutor_page(f"search/0/{c}/000/0/{q}"))) for c in rutor_cats]
+    words = query_words(query)
     if cat in TRACKER_CATEGORIES:
-        jobs.append(pool.submit(attempt, "NNM", lambda: parse_nnm(fetch(f"{NNM}tracker.php?nm={cp1251}"))))
+        if SEARCH_NNM:
+            jobs.append(pool.submit(attempt, "NNM", lambda: parse_nnm(fetch(f"{NNM}tracker.php?nm={cp1251}"))))
         jobs.append(pool.submit(attempt, "MEGAPEER", lambda: parse_megapeer(fetch(f"{MEGAPEER}browse.php?search={cp1251}"))))
+        jobs.append(pool.submit(attempt, torrentkino.SOURCE, lambda: kino.search(query, words, title_has, hit)))
     outcomes = [j.result() for j in jobs]
 
     def fits(h):
         if h["s"] == "RUTOR" or cat not in ("MOVIES", "SERIES"):
             return True
         return is_series(h["t"]) == (cat == "SERIES")
-
-    words = query_words(query)
 
     def relevant(h):
         # NNM-Club and Megapeer answer a query they cannot match with their newest releases: keep only titles
@@ -608,15 +668,29 @@ def search(query, cat):
 
     alive = [h for found, _ in outcomes for h in found if h["se"] >= MIN_SEEDS and fits(h) and relevant(h)]
     hits = sorted(merge(with_hashes(alive)), key=lambda h: -h["se"])[:SEARCH_LIMIT]
+    for h in hits:
+        h.pop("_tp", None)
     return hits, [e for _, e in outcomes if e]
 
 
 class Cache:
-    def __init__(self, ttl, limit):
-        self.ttl, self.limit = ttl, limit
+    """Built lists by key. Bounded by entries and, what matters for memory, by the hits they hold together: a hit
+    is ~2 KB in memory (its magnet alone is half a kilobyte), and 300 searches of 200 hits beside 200 catalog pages
+    took the process past its 300 MB limit (killed by systemd on 2026-11-10)."""
+
+    def __init__(self, ttl, limit, max_hits=12_000):
+        self.ttl, self.limit, self.max_hits = ttl, limit, max_hits
         self.items = {}
         self.lock = threading.Lock()
         self.building = {}
+
+    def _fit(self):
+        """Drops the oldest entries until the cache is inside its limits; the caller holds the lock."""
+        total = sum(len(v[1][0]) for v in self.items.values())
+        for k in sorted(self.items, key=lambda k: self.items[k][0]):
+            if len(self.items) <= self.limit and total <= self.max_hits:
+                break
+            total -= len(self.items.pop(k)[1][0])
 
     def get(self, key, build):
         """A fresh entry, or one built now; viewers asking the same at once share one build."""
@@ -642,11 +716,8 @@ class Cache:
                     now = time.time()
                     for k in [k for k, v in self.items.items() if now - v[0] >= self.ttl]:
                         del self.items[k]
-                    if len(self.items) >= self.limit:
-                        oldest = sorted(self.items, key=lambda k: self.items[k][0])[: self.limit // 10]
-                        for k in oldest:
-                            del self.items[k]
                     self.items[key] = (time.time(), value)
+                    self._fit()
             return value
         finally:
             if mine:
@@ -659,6 +730,7 @@ class Cache:
         if value[0]:
             with self.lock:
                 self.items[key] = (time.time(), value)
+                self._fit()
 
 
 browse_cache = Cache(BROWSE_TTL, 200)
@@ -671,9 +743,12 @@ def shelves_worker():
         for cat, popular in SHELVES:
             try:
                 browse_cache.refresh((cat, popular), lambda: browse(cat, popular))
-                pages.add(browse_cache.items[(cat, popular)][1][0])
+                built = browse_cache.items.get((cat, popular))
+                if built is None:  # the trackers did not answer: the next round tries again
+                    continue
+                pages.add(built[1][0])
                 if sense is not None:
-                    sense.offer(browse_cache.items[(cat, popular)][1][0])
+                    sense.offer(built[1][0])
             except Exception as e:
                 print("shelf", cat, popular, type(e).__name__, e, file=sys.stderr, flush=True)
         time.sleep(BROWSE_TTL - 60)
@@ -752,6 +827,18 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        try:
+            return self.answer_get()
+        except (BrokenPipeError, ConnectionResetError):
+            return None
+        except Exception as e:  # a tracker changed its page, a bad parameter: an error answer, not a dropped connection
+            print("request", self.path[:120], type(e).__name__, e, file=sys.stderr, flush=True)
+            try:
+                return self.send(500, b'{"error":"index error"}')
+            except OSError:
+                return None
+
+    def answer_get(self):
         url = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(url.query)
         cat = query.get("cat", ["ALL"])[0].upper()
@@ -762,11 +849,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.rating(url.path, query)
         if url.path == "/film":
             return self.film(query)
+        if url.path == "/magnet":
+            return self.magnet(query)
+        if url.path.startswith("/sync/"):
+            return self.sync_call(url, query)
         if url.path == "/health":
             return self.send(200, json.dumps({"pages": store.count(), "queued": len(pages.items), "today": stats.view()}).encode())
         if url.path == "/browse":
             popular = query.get("popular", ["0"])[0] == "1"
-            page = max(0, min(int(query.get("page", ["0"])[0] or 0), MAX_BROWSE_PAGE)) if query.get("page", ["0"])[0].isdigit() else 0
+            number = query.get("page", ["0"])[0]
+            page = min(int(number), MAX_BROWSE_PAGE) if number.isascii() and number.isdigit() and len(number) < 6 else 0
             hits, errors = browse_cache.get((cat, popular) if page == 0 else (cat, popular, page), lambda: browse(cat, popular, page))
         elif url.path in ("/similar", "/meaning"):
             return self.meaning(url.path, query)
@@ -796,6 +888,29 @@ class Handler(BaseHTTPRequestHandler):
         body = {"v": 1, "po": info.get("poster") or "", "c": info.get("country") or "", "i": info.get("imdb") or "",
                 "k": info.get("kp") or "", "g": info.get("genre") or "", "s": (info.get("story") or "")[:1500]}
         return self.send(200, json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode())
+
+    def sync_call(self, url, query):
+        """Sync between a viewer's devices (kinosync): stored here on the primary server, passed to it elsewhere."""
+        if sync is None or not sync.enabled:
+            return self.send(404, b'{"error":"no sync here"}')
+        ip = self.headers.get("X-Client-IP", "") or self.client_address[0]
+        via = query.get("via", [""])[0]
+        key = os.environ.get("KINORATE_SYNC_KEY", "")
+        if via and key and hmac.compare_digest(self.headers.get("X-Rate-Key", "").encode(), key.encode()):
+            ip = via[:64]
+        status, answer = sync.handle(url.path, query, url.query, ip)
+        return self.send(status, json.dumps(answer, separators=(",", ":")).encode())
+
+    def magnet(self, query):
+        """The magnet of a TorrentKino release page (?p=<page>), read from its .torrent once and kept."""
+        try:
+            magnet = kino.magnet(query.get("p", [""])[0])
+        except ValueError as e:
+            return self.send(400, json.dumps({"error": str(e)}).encode())
+        except Exception as e:
+            print("magnet", type(e).__name__, e, file=sys.stderr, flush=True)
+            return self.send(502, b'{"error":"torrent unavailable"}')
+        return self.send(200, json.dumps({"v": 1, "m": magnet}).encode())
 
     def rating(self, path, query):
         """Community ratings: /ratings?f=<ids>, /rate?f=&k=&s=&t=, /unrate?k=, /ratesync?since= (the other server only)."""
@@ -867,7 +982,9 @@ class Handler(BaseHTTPRequestHandler):
 
 sense = None
 rates = None
-meaning_cache = Cache(SEARCH_TTL, 200)
+kino = None
+sync = None
+meaning_cache = Cache(SEARCH_TTL, 200, max_hits=4_000)
 
 
 def meaning_search(text):
@@ -947,8 +1064,10 @@ def meaning_search(text):
 
 
 def main():
-    global store, sense, rates
+    global store, sense, rates, kino, sync
     store = Store(DB_PATH)
+    sync = kinosync.Sync(os.environ.get("KINOSYNC_DB", os.path.join(os.path.dirname(DB_PATH) or ".", "sync.db")))
+    kino = torrentkino.TorrentKino(fetch, lambda url: fetch_bytes(url, limit=4_000_000)[0], lookup_pace, store)
     rates = kinorate.Rates(os.environ.get("KINORATE_DB", os.path.join(os.path.dirname(DB_PATH) or ".", "rates.db")))
     threading.Thread(target=rates.sync_worker, daemon=True).start()
     try:
