@@ -22,10 +22,25 @@ android {
         minSdk = 24
         //noinspection OldTargetApi
         targetSdk = 36
-        versionCode = 47
-        versionName = "2.8.6.7"
+        versionCode = 48
+        versionName = "2.8.7"
         buildConfigField("String", "GDRIVE_CLIENT_ID", "\"${google.getProperty("clientId", "")}\"")
         buildConfigField("String", "GDRIVE_CLIENT_SECRET", "\"${google.getProperty("clientSecret", "")}\"")
+    }
+
+    // Two apps from one code: "tv" (remote, left menu, the APK of every release so far) and "mobile" (touch, bottom bar,
+    // phone settings). Same package and signature, so one replaces the other with the library kept (device/Edition.kt).
+    flavorDimensions += "edition"
+    productFlavors {
+        create("tv") {
+            dimension = "edition"
+            isDefault = true
+            buildConfigField("String", "EDITION", "\"tv\"")
+        }
+        create("mobile") {
+            dimension = "edition"
+            buildConfigField("String", "EDITION", "\"mobile\"")
+        }
     }
 
     signingConfigs {

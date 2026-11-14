@@ -20,3 +20,7 @@ engine/.upstream/
 .kinotrek/
 decoder/.upstream/
 __pycache__/
+
+# Release output of the tv and mobile flavors.
+app/tv/
+app/mobile/

@@ -71,6 +71,17 @@
             android:name=".UpdateInstallReceiver"
             android:exported="false" />
 
+        <!-- Hands a downloaded update to Android's own installer on boxes where installing from the app fails. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_files" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

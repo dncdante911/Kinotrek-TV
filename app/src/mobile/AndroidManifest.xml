@@ -1,0 +1,45 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- Kinotrek Mobile: a phone or tablet app. Not offered on a TV's launcher row: a TV takes the TV edition. -->
+    <uses-feature android:name="android.software.leanback" tools:node="remove" />
+
+    <application>
+        <!-- Picture in picture: the film goes on in a small window over the home screen or another app. -->
+        <activity
+            android:name=".PlayerActivity"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            tools:node="merge" />
+
+        <activity android:name=".MainActivity" tools:node="merge">
+            <intent-filter tools:node="removeAll" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="magnet" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/json" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
