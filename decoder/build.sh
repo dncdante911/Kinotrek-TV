@@ -13,7 +13,9 @@ set -euo pipefail
 BRANCH="${1:-release/9.0}"
 # Android 7.0, the oldest the app supports.
 API=24
-DECODERS=(ac3 eac3 dca truehd mlp)
+# Dolby/DTS, plus MPEG audio and AAC: TV channels (DVB) carry MP2 sound, which many boxes cannot decode themselves —
+# the player fell back to FFmpeg, found no decoder there and played those channels silent.
+DECODERS=(ac3 eac3 dca truehd mlp mp1 mp1float mp2 mp2float mp3 mp3float aac aac_latm)
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 WORK="$HERE/.upstream"

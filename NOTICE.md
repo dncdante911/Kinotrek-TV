@@ -13,7 +13,7 @@
 | [Xray-core](https://github.com/XTLS/Xray-core) — туннель к ретранслятору Кинотрека, VLESS + REALITY (каталог `tunnel/`, отдельный процесс `libkinotunnel.so`) | RPRX и участники проекта XTLS | Mozilla Public License 2.0 |
 | [Jetpack Compose, Compose for TV, AndroidX](https://developer.android.com/jetpack) | Google / The Android Open Source Project | Apache License 2.0 |
 | [AndroidX Media3 (ExoPlayer)](https://github.com/androidx/media) | Google / The Android Open Source Project | Apache License 2.0 |
-| [FFmpeg](https://ffmpeg.org) — декодер звука Dolby Digital / Digital Plus, DTS, TrueHD (`libffmpegJNI.so`, отдельная динамическая библиотека) | FFmpeg developers | GNU LGPL v2.1 или новее |
+| [FFmpeg](https://ffmpeg.org) — декодер звука Dolby Digital / Digital Plus, DTS, TrueHD, MPEG (MP1/MP2/MP3) и AAC (`libffmpegJNI.so`, отдельная динамическая библиотека) | FFmpeg developers | GNU LGPL v2.1 или новее |
 | [Media3 decoder_ffmpeg](https://github.com/androidx/media/tree/main/libraries/decoder_ffmpeg) — обвязка FFmpeg (`decoder/jni`, `androidx.media3.decoder.ffmpeg`) | Google / The Android Open Source Project | Apache License 2.0 |
 | [Kotlin, kotlinx.coroutines](https://github.com/JetBrains/kotlin) | JetBrains | Apache License 2.0 |
 | [ZXing](https://github.com/zxing/zxing) — QR-коды | ZXing authors | Apache License 2.0 |
