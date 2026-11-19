@@ -1097,6 +1097,12 @@ def meaning_search(text):
         for h in named:
             candidates.setdefault(h["id"], h)
         ranked = sorted(candidates.values(), key=score, reverse=True)
+        if plan and plan["title"]:
+            # The query names a film («властелин колец»): its releases, the films the model calls like it and only what
+            # strongly matches. The vectors' near neighbours («магия», «короли») brought anime and crime series in.
+            ours = [h for h in ranked if h["id"] in named_ids or h["id"] in known_rank]
+            others = [h for h in ranked if h["id"] not in named_ids and h["id"] not in known_rank and score(h) >= 8][:4]
+            ranked = ours + others
         if years:
             # «Комедии 90-х»: when the asked years have enough films, the rest (this year's releases above all, which
             # every genre search brings) go.

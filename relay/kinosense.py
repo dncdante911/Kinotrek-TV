@@ -36,11 +36,12 @@ WORK_EVERY_S = 30
 # The matrix the queries use is rebuilt from memory at most this often; new vectors wait that long at worst.
 MATRIX_EVERY_S = 60
 STALE_EVERY_S = 300
-# A viewer's search waits for the model at most this long (the relay gives the whole answer 25 s); after two
-# failures in a row the model is left alone for a while and searches go on without it, by the words of the query.
-ASK_TIMEOUT_S = 12
-REST_AFTER_FAILURES = 2
-REST_S = 300
+# A viewer's search waits for the model at most this long (the relay gives the whole answer 25 s; a plan that names
+# films and years takes 3-9 s); after three failures in a row the model is left alone for a while and searches go on
+# without it, by the words of the query.
+ASK_TIMEOUT_S = 15
+REST_AFTER_FAILURES = 3
+REST_S = 90
 TITLE_NOISE = re.compile(r"\s*[(\[].*$")
 
 
@@ -118,6 +119,7 @@ class Sense:
         '"films":["до 6 известных фильмов или сериалов, которые точно подходят под запрос, русские названия как в прокате '
         '(для «фильм где мужчина застрял на Марсе»: Марсианин; для «боевики с Томом Крузом»: Миссия невыполнима, Топ Ган: Мэверик, Грань будущего; '
         'для запроса по жанру и времени, например «комедии 90-х», — самые известные такие фильмы: Маска, Эйс Вентура, Один дома, Тупой и ещё тупее); '
+        'если запрос — название, то сначала оно само, затем 3-5 по-настоящему похожих фильмов или сериалов (для «Властелин колец»: Хоббит, Кольца власти, Игра престолов); '
         'пусто, если не уверен"],'
         '"years":[год от, год до — только если запрос называет время выхода: «90-х» = [1990, 1999], «новинки» = [], «старые советские» = [1950, 1991]]}')
 
