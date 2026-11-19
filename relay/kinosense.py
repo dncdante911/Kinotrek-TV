@@ -114,12 +114,17 @@ class Sense:
         '"people":["актёры, режиссёры: имя и фамилия в именительном падеже по-русски"],'
         '"genres":["жанры: боевик, комедия, фантастика, ужасы, драма, триллер, катастрофа, мультфильм, аниме…"],'
         '"keywords":["3-6 слов или коротких фраз, которые встретятся в описании такого фильма: темы, сеттинг, '
-        'синонимы и родственные понятия (для «про людей со сверхспособностями»: сверхспособности, супергерои, мутанты, комикс, Marvel, DC)"]}')
+        'синонимы и родственные понятия (для «про людей со сверхспособностями»: сверхспособности, супергерои, мутанты, комикс, Marvel, DC)"],'
+        '"films":["до 6 известных фильмов или сериалов, которые точно подходят под запрос, русские названия как в прокате '
+        '(для «фильм где мужчина застрял на Марсе»: Марсианин; для «боевики с Томом Крузом»: Миссия невыполнима, Топ Ган: Мэверик, Грань будущего; '
+        'для запроса по жанру и времени, например «комедии 90-х», — самые известные такие фильмы: Маска, Эйс Вентура, Один дома, Тупой и ещё тупее); '
+        'пусто, если не уверен"],'
+        '"years":[год от, год до — только если запрос называет время выхода: «90-х» = [1990, 1999], «новинки» = [], «старые советские» = [1950, 1991]]}')
 
     def understand(self, text):
         """What a query asks for: {kind, title, people, genres, keywords} from the chat model, or None when it is out of reach."""
         body = json.dumps({"model": CHAT_MODEL, "stream": False, "think": False, "format": "json",
-                           "options": {"temperature": 0, "num_predict": 300},
+                           "options": {"temperature": 0, "num_predict": 450},
                            "messages": [{"role": "system", "content": self.PLAN_PROMPT}, {"role": "user", "content": text}]}).encode()
         request = urllib.request.Request(URL + "/api/chat", data=body, method="POST",
                                          headers={"Content-Type": "application/json", "X-Kino-Key": KEY})
@@ -143,8 +148,18 @@ class Sense:
             parts = [p.strip() for x in v for p in str(x).split(",")]
             return [p for p in parts if p][:n]
         kind = plan.get("kind") if plan.get("kind") in ("movie", "series") else "any"
+        years = []
+        raw = plan.get("years")
+        if isinstance(raw, list) and len(raw) == 2:
+            try:
+                low, high = int(raw[0]), int(raw[1])
+                if 1900 <= low <= high <= 2100:
+                    years = [low, high]
+            except (TypeError, ValueError):
+                years = []
         return {"kind": kind, "title": str(plan.get("title") or "").strip()[:100],
-                "people": strings("people", 3), "genres": strings("genres", 3), "keywords": strings("keywords", 6)}
+                "people": strings("people", 3), "genres": strings("genres", 3), "keywords": strings("keywords", 6),
+                "films": strings("films", 8), "years": years}
 
     @staticmethod
     def text_of(hit, info):

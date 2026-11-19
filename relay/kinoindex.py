@@ -987,6 +987,39 @@ sync = None
 meaning_cache = Cache(SEARCH_TTL, 200, max_hits=4_000)
 
 
+def release_year(title):
+    """The first year in a release title («Фильм (1994) BDRip», «Сериал [S01] (2019-2021)»)."""
+    m = re.search(r"[(\[](\d{4})", title)
+    return int(m.group(1)) if m and 1900 <= int(m.group(1)) <= 2100 else None
+
+
+def films_by_title(titles):
+    """Releases of films the model named: one Rutor title search each, in parallel. id -> (rank, hit); a film's
+    releases share its rank."""
+    def run(title):
+        words = query_words(title)
+        if not words:
+            return []
+        try:
+            q = urllib.parse.quote(title)
+            # 000 = search in titles only: a film's name, not every description that mentions it.
+            found = parse_rutor(*rutor_page(f"search/0/0/000/0/{q}"))
+        except Exception:
+            return []
+        return [h for h in found if h["se"] >= MIN_SEEDS and VIDEO_FORMAT.search(h["t"]) and title_has(h["t"], words)][:4]
+
+    out = {}
+    jobs = [(rank, pool.submit(run, t)) for rank, t in enumerate(titles[:8])]
+    for rank, job in jobs:
+        try:
+            found = job.result(timeout=15)
+        except Exception:
+            continue
+        for h in merge(found):
+            out.setdefault(h["id"], (rank, h))
+    return out
+
+
 def meaning_search(text):
     """Description hits (cast, genre words) and vector hits merged: films in both first, then Rutor's, then the vectors'."""
     def build():
@@ -1025,12 +1058,19 @@ def meaning_search(text):
         # only sat near them in the vectors.
         for h in ([] if not named else named):
             candidates.setdefault(h["id"], h)
+        # Films the model knows fit («мужчина застрял на Марсе» -> Марсианин): searched by title on Rutor, their releases
+        # rank by the model's order. The vectors only know films the index has met, the model knows the cinema.
+        known = films_by_title(plan["films"]) if plan and plan.get("films") else {}
+        for h in known.values():
+            candidates.setdefault(h[1]["id"], h[1])
+        known_rank = {h["id"]: rank for rank, h in known.values()}
         infos = store.get([h["p"] for h in candidates.values()])
         terms = []
         if plan:
             terms = [(stem(w), 2.0) for t in plan["keywords"] for w in re.findall(r"[\w-]+", t) if len(w) > 3]
             terms += [(stem(w), 3.0) for t in plan["people"] for w in re.findall(r"[\w-]+", t) if len(w) > 2]
         genre_names = {g.lower().replace("ё", "е")[:5] for g in (plan["genres"] if plan else [])}
+        years = (plan or {}).get("years") or []
         named_ids = {h["id"] for h in named}
 
         def score(h):
@@ -1041,6 +1081,13 @@ def meaning_search(text):
             points += 2.5 * sum(1 for g in genre_names if g in genre)
             if h["id"] in named_ids:
                 points += 100
+            if h["id"] in known_rank:
+                points += 12 - known_rank[h["id"]]
+            if years:
+                # «Комедии 90-х»: the time is part of the question, a film from another decade is not an answer.
+                year = release_year(h["t"])
+                if year is not None:
+                    points += 3 if years[0] <= year <= years[1] else -6
             if key(h) in titles_sense and key(h) in titles_text:
                 points += 4
             elif key(h) in titles_text:
@@ -1050,6 +1097,16 @@ def meaning_search(text):
         for h in named:
             candidates.setdefault(h["id"], h)
         ranked = sorted(candidates.values(), key=score, reverse=True)
+        if years:
+            # «Комедии 90-х»: when the asked years have enough films, the rest (this year's releases above all, which
+            # every genre search brings) go.
+            inside = [h for h in ranked if (y := release_year(h["t"])) is not None and years[0] <= y <= years[1]]
+            if len(inside) >= 6:
+                ranked = inside
+            else:
+                # Too few to stand alone: they lead, the films of other years follow.
+                ids = {h["id"] for h in inside}
+                ranked = inside + [h for h in ranked if h["id"] not in ids]
         # What nothing but the vectors vouches for (score under 1.5) is dropped when enough better films are there.
         good = [h for h in ranked if score(h) >= 1.5]
         ranked = good if len(good) >= 8 else ranked
