@@ -24,12 +24,14 @@ import json
 import os
 import re
 import sqlite3
+import ssl
 import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import gzip
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -853,6 +855,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.magnet(query)
         if url.path.startswith("/sync/"):
             return self.sync_call(url, query)
+        if url.path == "/guide":
+            return self.guide()
         if url.path == "/health":
             return self.send(200, json.dumps({"pages": store.count(), "queued": len(pages.items), "today": stats.view()}).encode())
         if url.path == "/browse":
@@ -970,6 +974,13 @@ class Handler(BaseHTTPRequestHandler):
         pages.add(hits[:40])
         body = answer(hits, [], "")
         stats.add(len(body), False)
+        return self.send(200, body)
+
+    def guide(self):
+        """The TV guide built by kinoguide.py (gzipped JSON, ~1.3 MB): one file for every viewer."""
+        body = guide_file.read()
+        if body is None:
+            return self.send(404, b'{"error":"no guide yet"}')
         return self.send(200, body)
 
     def send(self, status, body):
@@ -1126,6 +1137,82 @@ def meaning_search(text):
     return meaning_cache.get(text.lower(), build)[0]
 
 
+GUIDE_PATH = os.environ.get("KINOGUIDE_FILE", os.path.join(os.path.dirname(DB_PATH) or ".", "guide.json.gz"))
+# The office server builds the guide with its own service (kinoguide.service + timer: a 700 MB XML file is read
+# there, outside this process's memory limit); the cloud one (KINOGUIDE_PULL=1) takes a copy every two hours.
+GUIDE_PULL = os.environ.get("KINOGUIDE_PULL") == "1"
+GUIDE_PULL_EVERY_S = 2 * 3600
+
+
+class GuideFile:
+    """The guide file, read once per change."""
+
+    def __init__(self, path):
+        self.path, self.mtime, self.body = path, 0.0, None
+        self.lock = threading.Lock()
+
+    def read(self):
+        try:
+            mtime = os.path.getmtime(self.path)
+        except OSError:
+            return None
+        with self.lock:
+            if mtime != self.mtime:
+                with open(self.path, "rb") as f:
+                    self.body = f.read()
+                self.mtime = mtime
+            return self.body
+
+    def age(self):
+        try:
+            return time.time() - os.path.getmtime(self.path)
+        except OSError:
+            return float("inf")
+
+
+guide_file = GuideFile(GUIDE_PATH)
+
+
+def guide_worker():
+    """Takes the office server's guide now and then; a failed pull keeps the last copy."""
+    while GUIDE_PULL:
+        try:
+            if guide_file.age() > GUIDE_PULL_EVERY_S:
+                pull_guide()
+        except Exception as e:
+            print("guide", type(e).__name__, e, file=sys.stderr, flush=True)
+        time.sleep(600)
+
+
+def pull_guide():
+    """The office server's guide, through its relay like the ratings sync (KINORATE_PEER, pinned certificate)."""
+    peer = os.environ.get("KINORATE_PEER", "").rstrip("/")
+    secret = os.environ.get("RELAY_SECRET", "")
+    if not (peer and secret):
+        return
+    ca = os.environ.get("KINORATE_PEER_CA", "")
+    context = ssl.create_default_context(cafile=ca) if ca else ssl.create_default_context()
+    context.check_hostname = False
+
+    def get(path):
+        request = urllib.request.Request(peer + path, headers={"X-Relay-Key": secret, "X-Relay-Chunk": "64000"})
+        with urllib.request.urlopen(request, timeout=60, context=context) as r:
+            return r.headers, r.read()
+
+    headers, first = get("/x/guide")
+    if headers.get("X-Relay-Status", "200") != "200":
+        return
+    parts = int(headers.get("X-Relay-Parts", "1"))
+    pieces = [first] + [get(f"/p?id={headers['X-Relay-Id']}&n={n}")[1] for n in range(1, parts)]
+    body = gzip.decompress(b"".join(pieces))
+    if json.loads(gzip.decompress(body)).get("v") != 1:
+        return
+    tmp = GUIDE_PATH + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(body)
+    os.replace(tmp, GUIDE_PATH)
+
+
 def main():
     global store, sense, rates, kino, sync
     store = Store(DB_PATH)
@@ -1142,6 +1229,7 @@ def main():
     except ImportError:
         pass
     threading.Thread(target=page_worker, daemon=True).start()
+    threading.Thread(target=guide_worker, daemon=True).start()
     # A standby index (the office relay behind the cloud one) builds lists only when asked: its uplink is for other work.
     if not STANDBY:
         threading.Thread(target=shelves_worker, daemon=True).start()

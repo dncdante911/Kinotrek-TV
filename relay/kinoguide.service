@@ -1,0 +1,20 @@
+# Kinotrek TV guide (relay/kinoguide.py): built on the office server every 6 hours by kinoguide.timer.
+# A service of its own: reading the 700 MB XMLTV file must not count against kinoindex's memory limit.
+[Unit]
+Description=Kinotrek TV guide for the app (built from open XMLTV guides)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kinorelay
+ExecStart=/usr/bin/python3 /opt/kinorelay/kinoguide.py build /var/lib/kinoindex/guide.json.gz
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=400M
+TimeoutStartSec=30min
+ReadWritePaths=/var/lib/kinoindex
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

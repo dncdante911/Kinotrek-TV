@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds the FFmpeg audio decoder used for Dolby and DTS tracks the box cannot decode itself (or only
-# bitstreams, so the remote's volume does nothing) into app/src/main/jniLibs/<abi>/libffmpegJNI.so.
+# Builds the FFmpeg decoders the app falls back to — audio (Dolby and DTS the box cannot decode itself or only passes
+# on as bitstreams; MP2/AAC of TV channels) and old video formats (below) — into app/src/main/jniLibs/<abi>/libffmpegJNI.so.
 # The JNI glue is Media3's decoder_ffmpeg (decoder/jni, Apache 2.0); the Java side lives in
 # app/src/main/java/androidx/media3/decoder/ffmpeg. Keep both at the Media3 version of app/build.gradle.kts.
 #
@@ -16,6 +16,10 @@ API=24
 # Dolby/DTS, plus MPEG audio and AAC: TV channels (DVB) carry MP2 sound, which many boxes cannot decode themselves —
 # the player fell back to FFmpeg, found no decoder there and played those channels silent.
 DECODERS=(ac3 eac3 dca truehd mlp mp1 mp1float mp2 mp2float mp3 mp3float aac aac_latm)
+# Video the boxes' own decoders often fail on: MPEG-4 Part 2 (Xvid/DivX in old AVI releases: c2.android.mpeg4.decoder
+# fails on many devices), DivX 3 / MS-MPEG4, H.263 and MPEG-1/2. Played through ExperimentalFfmpegVideoDecoder
+# (Media3 pull request #1591, without libyuv: see decoder/jni/ffmpeg_jni.cc). H.264/HEVC stay with the hardware.
+DECODERS+=(mpeg4 h263 msmpeg4v1 msmpeg4v2 msmpeg4v3 mpeg1video mpeg2video)
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
 WORK="$HERE/.upstream"
@@ -38,7 +42,7 @@ fi
 OPTIONS=(
   --target-os=android --enable-cross-compile --enable-static --disable-shared --enable-pic
   --disable-autodetect --disable-doc --disable-programs --disable-everything
-  --disable-avdevice --disable-avformat --disable-swscale --disable-avfilter --disable-network
+  --disable-avdevice --disable-avformat --disable-avfilter --disable-network
   # iconv (subtitle charsets, unused for audio) is in Android's libc only from 9.0.
   --enable-swresample --disable-symver --disable-vulkan --disable-iconv
 )
@@ -71,7 +75,7 @@ for spec in "aarch64:armv8-a:aarch64-linux-android:arm64-v8a" "arm:armv7-a:armv7
   mkdir -p "$OUT/$abi"
   "$TOOLCHAIN/$triple$API-clang++" -shared -fPIC -O2 -std=c++11 -fvisibility=hidden -fvisibility-inlines-hidden \
     -I"$prefix/include" "$HERE/jni/ffmpeg_jni.cc" \
-    "$prefix/lib/libswresample.a" "$prefix/lib/libavcodec.a" "$prefix/lib/libavutil.a" \
+    "$prefix/lib/libswscale.a" "$prefix/lib/libswresample.a" "$prefix/lib/libavcodec.a" "$prefix/lib/libavutil.a" \
     -llog -landroid -lm "${ldflags[@]}" -o "$OUT/$abi/libffmpegJNI.so"
   "$TOOLCHAIN/llvm-strip" --strip-unneeded "$OUT/$abi/libffmpegJNI.so"
 done

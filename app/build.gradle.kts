@@ -14,7 +14,12 @@ val google = Properties().apply { if (googleFile.exists()) googleFile.inputStrea
 
 android {
     namespace = "org.trackertv.player"
-    compileSdk = 37
+    // Compose 1.13 (BOM 2026.11.01) needs the Android 17 QPR SDK, API 37.1; the app's behaviour is set by targetSdk.
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 1
+        }
+    }
 
     defaultConfig {
         applicationId = "org.trackertv.player"
@@ -22,8 +27,8 @@ android {
         minSdk = 24
         //noinspection OldTargetApi
         targetSdk = 36
-        versionCode = 52
-        versionName = "2.8.8.1-fix"
+        versionCode = 54
+        versionName = "2.8.8.7"
         buildConfigField("String", "GDRIVE_CLIENT_ID", "\"${google.getProperty("clientId", "")}\"")
         buildConfigField("String", "GDRIVE_CLIENT_SECRET", "\"${google.getProperty("clientSecret", "")}\"")
     }
@@ -84,7 +89,7 @@ android {
 
 dependencies {
     val media3 = "1.11.1"
-    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.11.01"))
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.tv:tv-material:1.1.0")
@@ -92,8 +97,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     // ProxyController: the built-in browser reaches a blocked RuTracker through the relay
     implementation("androidx.webkit:webkit:1.18.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     //noinspection Aligned16KB
     implementation("androidx.media3:media3-exoplayer:$media3")
@@ -108,8 +113,8 @@ dependencies {
     implementation("com.google.zxing:core:3.5.4")
     testImplementation("junit:junit:4.13.2")
     // Screenshots of the seasonal decoration, rendered on the JVM (KINO_SCREENSHOTS=1)
-    testImplementation("org.robolectric:robolectric:4.17")
-    testImplementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    testImplementation("org.robolectric:robolectric:4.18")
+    testImplementation(platform("androidx.compose:compose-bom:2026.11.01"))
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

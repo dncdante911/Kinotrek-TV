@@ -1,0 +1,10 @@
+[Unit]
+Description=Rebuild the Kinotrek TV guide every 6 hours
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

@@ -2,4 +2,8 @@
 <!-- The downloaded update, handed to the system installer when the app cannot install it itself (see Updater). -->
 <paths>
     <cache-path name="updates" path="updates/" />
+    <!-- A video from the device's storage or a USB drive, opened in an external player: Android 7+ refuses file:// links
+         to other apps (FileUriExposedException, reports of 2.8.8.1-fix), so they get a content:// one (MainActivity). -->
+    <external-path name="storage" path="." />
+    <root-path name="root" path="" />
 </paths>

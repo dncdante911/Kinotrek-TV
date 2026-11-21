@@ -26,7 +26,7 @@ seq order); GET /s/r?id=&off=<offset>&size=<bytes>&ack=<offset> answers the byte
 waiting up to STREAM_WAIT s for some, with X-Relay-Eof: 1 once the site has closed and all is read
 (ack: everything before it has arrived and may be dropped); POST /s/c?id= closes it.
 
-GET /x/browse?cat=&popular=, /x/search?q=&cat= answer finished tracker lists from kinoindex.py.
+GET /x/browse?cat=&popular=, /x/search?q=&cat= answer finished tracker lists from kinoindex.py; /x/guide the TV guide.
 POST /log stores an app crash or playback report (JSON, at most 64 KB) under RELAY_REPORTS.
 POST /v1/telemetry/events, /v1/telemetry/delete pass anonymous usage events (only from viewers who agreed) to
 kinostats.py on this host; no address of the sender is passed on or kept.
@@ -41,6 +41,7 @@ environment: RELAY_BIND (host:port), RELAY_CERT, RELAY_KEY_FILE (TLS), RELAY_SEC
 """
 import contextlib
 import gzip
+import hashlib
 import hmac
 import shutil
 import io
@@ -130,6 +131,10 @@ INDEX_MAX_BYTES = 2_000_000
 # Usage statistics (kinostats.py on this host, localhost only). Without it the paths answer 404.
 STATS_URL = os.environ.get("KINOSTATS_URL", "http://127.0.0.1:8447")
 STATS_PATHS = ("/v1/telemetry/events", "/v1/telemetry/delete")
+
+# Kinotrek's own servers that pass viewers' requests on to this relay (Oracle's HAProxy sends its Russian viewers to
+# "radio", 2026-11-21): from them X-Forwarded-For names the viewer, so limits count each viewer, not the whole server.
+TRUSTED_FORWARDERS = frozenset(a.strip() for a in os.environ.get("RELAY_TRUSTED_FORWARDERS", "").split(",") if a.strip())
 STATS_MAX = 16_384
 STATS_PER_MINUTE = 10
 
@@ -477,6 +482,209 @@ def shrink(body, width):
 
 
 SHRINKING = threading.Semaphore(2)
+
+
+class ImageCache:
+    """
+    Posters already scaled, on disk: every viewer behind a block sees the same home-screen posters, and each one used to
+    be downloaded (up to 8 MB), decoded and re-encoded again for every viewer — on Oracle's 1/8 of a CPU that alone
+    held the relay at 100 % and made the home screen of Russian viewers come up empty (2026-11-21). A file per
+    (url, width); the oldest go when the folder passes its size. Without a folder (no state directory) it keeps nothing.
+    """
+
+    def __init__(self, folder, max_bytes, ttl):
+        self.folder = folder
+        self.max_bytes = max_bytes
+        self.ttl = ttl
+        self.lock = threading.Lock()
+        self.size = None
+        if folder:
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except OSError:
+                self.folder = None
+
+    def _path(self, key):
+        return os.path.join(self.folder, hashlib.sha1(key.encode()).hexdigest())
+
+    def get(self, key):
+        """(body, content type) or None."""
+        if not self.folder:
+            return None
+        path = self._path(key)
+        try:
+            if time.time() - os.path.getmtime(path) > self.ttl:
+                return None
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        head, _, body = data.partition(b"\n")
+        return (body, head.decode("ascii", "replace")) if body else None
+
+    def put(self, key, body, content_type):
+        if not self.folder or not body:
+            return
+        path = self._path(key)
+        tmp = f"{path}.{threading.get_ident()}.tmp"
+        try:
+            with open(tmp, "wb") as f:
+                f.write(content_type.encode("ascii", "replace") + b"\n" + body)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return
+        with self.lock:
+            if self.size is None:
+                self.size = self._measure()
+            self.size += len(body)
+            if self.size > self.max_bytes:
+                self._prune()
+
+    def _measure(self):
+        total = 0
+        try:
+            with os.scandir(self.folder) as entries:
+                for entry in entries:
+                    try:
+                        total += entry.stat().st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
+    def _prune(self):
+        """The oldest files go until the folder is at 3/4 of its size."""
+        files = []
+        try:
+            with os.scandir(self.folder) as entries:
+                for entry in entries:
+                    try:
+                        st = entry.stat()
+                        files.append((st.st_mtime, st.st_size, entry.path))
+                    except OSError:
+                        pass
+        except OSError:
+            return
+        files.sort()
+        total = sum(size for _, size, _ in files)
+        for _, size, path in files:
+            if total <= self.max_bytes * 3 // 4:
+                break
+            try:
+                os.remove(path)
+                total -= size
+            except OSError:
+                pass
+        self.size = total
+
+
+# The service's state directory (systemd StateDirectory=kinorelay); RELAY_IMAGE_CACHE="" turns the cache off.
+image_cache = ImageCache(
+    os.environ.get("RELAY_IMAGE_CACHE", "/var/lib/kinorelay/images" if os.path.isdir("/var/lib/kinorelay") else ""),
+    int(os.environ.get("RELAY_IMAGE_CACHE_MB", "600")) * 1_000_000,
+    7 * 24 * 3600,
+)
+
+
+class KeyLocks:
+    """One worker per key does the work; the others asking for the same thing meanwhile wait and take its result."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.held = {}
+
+    def hold(self, key):
+        outer = self
+
+        class Holder:
+            def __enter__(self):
+                with outer.lock:
+                    entry = outer.held.setdefault(key, [threading.Lock(), 0])
+                    entry[1] += 1
+                entry[0].acquire()
+                self.entry = entry
+
+            def __exit__(self, *exc):
+                self.entry[0].release()
+                with outer.lock:
+                    self.entry[1] -= 1
+                    if self.entry[1] == 0:
+                        outer.held.pop(key, None)
+                return False
+
+        return Holder()
+
+
+image_locks = KeyLocks()
+
+# Another Kinotrek relay that asks image hosts this one cannot reach: Ukraine blocks imageban.ru, which radio's posters
+# then never got (2026-11-21); Oracle reaches it. Oracle answers radio's own requests itself, so they never loop.
+IMAGE_PEER = os.environ.get("RELAY_IMAGE_PEER", "").rstrip("/")
+IMAGE_PEER_CA = os.environ.get("RELAY_IMAGE_PEER_CA", "")
+# Image hosts this relay could not reach lately (host -> until when): their posters go to IMAGE_PEER at once, instead of
+# a 12 s wait each that left the app's request no time for the peer.
+unreachable_hosts = {}
+UNREACHABLE_FOR = 600
+
+
+def peer_image(target, width):
+    """(body, content type) of the poster through IMAGE_PEER, or None."""
+    if not IMAGE_PEER:
+        return None
+    context = ssl.create_default_context(cafile=IMAGE_PEER_CA) if IMAGE_PEER_CA else ssl.create_default_context()
+    context.check_hostname = False  # reached by IP; the certificate is pinned through cafile
+    headers = {"X-Relay-Key": SECRET.decode(), "X-Relay-Chunk": "64000"}
+
+    def get(path):
+        with urllib.request.urlopen(urllib.request.Request(IMAGE_PEER + path, headers=headers), timeout=20, context=context) as r:
+            return r.headers, r.read(IMAGE_MAX_BYTES)
+
+    try:
+        meta, first = get("/i?" + urllib.parse.urlencode({"u": target, "w": width}))
+        if meta.get("X-Relay-Status", "200") != "200":
+            return None
+        parts = int(meta.get("X-Relay-Parts", "1"))
+        pieces = [first] + [get(f"/p?id={meta['X-Relay-Id']}&n={n}")[1] for n in range(1, parts)]
+        body = gzip.decompress(b"".join(pieces))
+        content_type = meta.get("X-Relay-Type") or "image/jpeg"
+        return (body, content_type) if body and content_type.startswith("image/") else None
+    except (OSError, ValueError, KeyError, EOFError, gzip.BadGzipFile):
+        return None
+
+
+class TlsStats:
+    """How many TLS handshakes the relay did and how many resumed a session (cheap) instead of a full one; /health shows it."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.full = 0
+        self.resumed = 0
+        self.failed = 0
+        self.versions = {}
+
+    def count(self, tls):
+        with self.lock:
+            if tls is None:
+                self.failed += 1
+                return
+            if tls.session_reused:
+                self.resumed += 1
+            else:
+                self.full += 1
+            version = tls.version() or "?"
+            self.versions[version] = self.versions.get(version, 0) + 1
+
+    def snapshot(self):
+        with self.lock:
+            return {"full": self.full, "resumed": self.resumed, "failed": self.failed, "versions": dict(self.versions)}
+
+
+tls_stats = TlsStats()
 SHRINK_MAX_PIXELS = 50_000_000
 
 
@@ -722,8 +930,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def adopt_forwarded(self):
+        """A request passed on by one of TRUSTED_FORWARDERS counts as its viewer's (the last X-Forwarded-For, set by it)."""
+        if self.client_address[0] not in TRUSTED_FORWARDERS:
+            return
+        forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+        try:
+            ipaddress.ip_address(forwarded)
+        except ValueError:
+            return
+        self.client_address = (forwarded, self.client_address[1])
+
     def do_GET(self):
+        self.adopt_forwarded()
         url = urllib.parse.urlsplit(self.path)
+        if url.path == "/health/tls":
+            body = json.dumps({"tls": tls_stats.snapshot()}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if url.path == "/health":
             body = b"ok"
             self.send_response(200)
@@ -731,7 +959,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search", "/x/similar", "/x/meaning", "/x/ratings", "/x/rate", "/x/unrate", "/x/ratesync", "/x/film", "/x/magnet", "/x/sync/push", "/x/sync/pair", "/x/sync/claim", "/x/sync/forget"):
+        if url.path not in ("/r", "/p", "/i", "/s/r", "/t", "/x/browse", "/x/search", "/x/similar", "/x/meaning", "/x/ratings", "/x/rate", "/x/unrate", "/x/ratesync", "/x/film", "/x/magnet", "/x/guide", "/x/sync/push", "/x/sync/pair", "/x/sync/claim", "/x/sync/forget"):
             return self.fail(404, "not found")
         if not hmac.compare_digest(self.headers.get("X-Relay-Key", "").encode(), SECRET):
             return self.fail(403, "bad key")
@@ -795,6 +1023,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        self.adopt_forwarded()
         url = urllib.parse.urlsplit(self.path)
         if url.path not in ("/s/open", "/s/w", "/s/c", "/log") + STATS_PATHS:
             return self.fail(404, "not found")
@@ -979,14 +1208,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def image(self, query):
         """A poster from an image host, scaled to the card; redirects are followed here, each checked."""
-        if not self.permit(image_limits):
-            return self.fail(429, "too many requests")
         try:
             chunk = int(self.headers.get("X-Relay-Chunk", "0")) or 8_000
             width = min(max(int(query.get("w", [IMAGE_WIDTH])[0]), IMAGE_WIDTH_MIN), IMAGE_WIDTH_MAX)
         except ValueError:
             return self.fail(400, "bad request")
         target = requote(query.get("u", [""])[0])
+        key = f"{width}|{target}"
+        cached = image_cache.get(key)
+        if cached is None:
+            # Only a download counts against the limit: a poster already scaled costs next to nothing, and many viewers
+            # of a mobile operator share one address.
+            if not self.permit(image_limits):
+                return self.fail(429, "too many requests")
+            # Viewers opening the same home screen ask for the same posters at once: one download and one scaling.
+            with image_locks.hold(key):
+                cached = image_cache.get(key)
+                if cached is None:
+                    found = self.fetch_image(target, width)
+                    if isinstance(found, tuple):
+                        image_cache.put(key, *found)
+                        cached = found
+                    else:
+                        return found
+        body, content_type = cached
+        # A picture is compressed already: the wrapping the protocol needs, at the cheapest level.
+        return self.send_split(body, chunk, 200, content_type, level=1)
+
+    def fetch_image(self, target, width):
+        """(scaled body, content type), or what self.fail answered."""
+        host = urllib.parse.urlsplit(target).hostname or ""
+        if IMAGE_PEER and unreachable_hosts.get(host, 0) > time.time() and image_host_allowed(host):
+            found = peer_image(target, width)
+            if found is not None:
+                return found
+        return self.fetch_image_here(target, width)
+
+    def fetch_image_here(self, target, width):
+        """(scaled body, content type), or what self.fail answered; an unreachable site goes to IMAGE_PEER first."""
         for _ in range(4):
             parts = urllib.parse.urlsplit(target)
             if parts.scheme not in ("http", "https") or port_of(parts) not in (None, 80, 443) \
@@ -998,6 +1257,11 @@ class Handler(BaseHTTPRequestHandler):
             except urllib.error.HTTPError as e:
                 response = e
             except (urllib.error.URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError, ValueError) as e:
+                if IMAGE_PEER and parts.hostname:
+                    unreachable_hosts[parts.hostname] = time.time() + UNREACHABLE_FOR
+                    found = peer_image(target, width)
+                    if found is not None:
+                        return found
                 return self.fail(502, f"site unreachable: {type(getattr(e, 'reason', e)).__name__}")
             status = response.status if hasattr(response, "status") else response.code
             if status in (301, 302, 303, 307, 308) and response.headers.get("Location"):
@@ -1019,8 +1283,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(body) > IMAGE_MAX_BYTES:
             return self.fail(502, "image too large")
         body, shrunk_type = shrink(body, width)
-        # A picture is compressed already: the wrapping the protocol needs, at the cheapest level.
-        return self.send_split(body, chunk, 200, shrunk_type or content_type, level=1)
+        return body, shrunk_type or content_type.split(";")[0].strip()
 
 
 class Server(ThreadingHTTPServer):
@@ -1046,7 +1309,9 @@ class Server(ThreadingHTTPServer):
             client_address = (read_proxy_header(request) or client_address[0], client_address[1])
             tls = self.context.wrap_socket(request, server_side=True)
         except (OSError, ValueError):
+            tls_stats.count(None)
             return
+        tls_stats.count(tls)
         Handler(tls, client_address, self)
 
 
